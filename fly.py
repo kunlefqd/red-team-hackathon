@@ -35,7 +35,7 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # ── Flight constants ──────────────────────────────────────────────────────────
-ALT = 5.0        # cruise altitude (m above ground → z = -5)
+ALT = 5.0        # cruise altitude (m above ground → z = -3)
 SPEED = 5.0      # default move speed (m/s)
 
 # ── Async helpers ─────────────────────────────────────────────────────────────
@@ -250,36 +250,39 @@ def _arrow_from_frame(frame):
 
 def _arrows_centroid_norm(frame):
     """
-    Normalised horizontal centroid of the green mask pixels (0=left, 0.5=centre, 1=right).
-    Returns None when there are too few green pixels to be meaningful.
+    Normalised horizontal centroid of the combined green+red mask.
+    Merging into one mask before computing moments gives a single centroid
+    that sits at the physical centre of the sign regardless of colour order.
+    Returns None when there aren't enough coloured pixels.
     """
-    g_mask, _ = _green_red_masks(frame)
-    px = cv2.countNonZero(g_mask)
-    if px < 100:
+    g_mask, r_mask = _green_red_masks(frame)
+    combined = cv2.bitwise_or(g_mask, r_mask)
+    if cv2.countNonZero(combined) < 100:
         return None
-    M = cv2.moments(g_mask)
+    M = cv2.moments(combined)
     if M["m00"] == 0:
         return None
-    cx = M["m10"] / M["m00"]
-    return cx / frame.shape[1]
+    return (M["m10"] / M["m00"]) / frame.shape[1]
 
 
-async def spin_find_arrows(drone, centre_tol=0.20):
+async def spin_find_arrows(drone, min_each=15):
     """
-    Sweep in 45° steps; stop when the green arrow centroid is within
-    centre_tol of the frame centre, then snap yaw to the nearest 90°
-    multiple using telemetry so we're always axis-aligned before moving.
-
-    Returns the snapped yaw (degrees), or None after a full revolution.
+    Sweep in 10° steps.  For each heading, compute the individual centroids
+    of the green and red blobs.  Stop when the camera centre (0.5) falls
+    strictly between them — i.e. one blob is left of centre and the other
+    is right of centre.  This fires exactly when the drone is looking into
+    the gap between the two arrows, regardless of which colour is on which side.
+    Then snap yaw to the nearest 45° via live telemetry.
+    Returns the snapped yaw, or None after a full revolution.
     """
-    log.info(">> spin-scan: searching for arrow sign …")
+    log.info(">> spin-scan: searching for gap between arrows …")
     start_yaw = _yaw_deg(drone)
     mask_saved = False
 
-    for step in range(36):                      # 36 × 10° = full 360°
+    for step in range(36):
         target_yaw = start_yaw + step * 10.0
         await yaw_to(drone, target_yaw)
-        await asyncio.sleep(0.2)                # let frame settle
+        await asyncio.sleep(0.2)
 
         f = read_frame(drone)
         if f is None:
@@ -288,67 +291,97 @@ async def spin_find_arrows(drone, centre_tol=0.20):
         g_mask, r_mask = _green_red_masks(f)
         g_px = cv2.countNonZero(g_mask)
         r_px = cv2.countNonZero(r_mask)
-        norm_cx = _arrows_centroid_norm(f)
-        centred  = norm_cx is not None and abs(norm_cx - 0.5) <= centre_tol
 
-        cx_str = f"{norm_cx:.2f}" if norm_cx is not None else "----"
-        log.info(
-            f"   step={step}  yaw={target_yaw:.1f}°  "
-            f"green_px={g_px:5d}  red_px={r_px:5d}  "
-            f"norm_cx={cx_str}  centred={centred}"
+        cx_g, cx_r = None, None
+        if g_px >= min_each:
+            Mg = cv2.moments(g_mask)
+            if Mg["m00"] > 0:
+                cx_g = (Mg["m10"] / Mg["m00"]) / f.shape[1]
+        if r_px >= min_each:
+            Mr = cv2.moments(r_mask)
+            if Mr["m00"] > 0:
+                cx_r = (Mr["m10"] / Mr["m00"]) / f.shape[1]
+
+        # camera centre is in the gap when one blob is left of 0.5
+        # and the other is right of 0.5
+        in_gap = (
+            cx_g is not None and cx_r is not None
+            and min(cx_g, cx_r) < 0.5 < max(cx_g, cx_r)
         )
-        _debug_arrow_view(f, f"scan {target_yaw:.0f}° | cx={cx_str} | {'CENTRED ✓' if centred else 'scanning…'}")
 
-        if not mask_saved and g_px > 50:
+        g_str = f"{cx_g:.2f}" if cx_g is not None else "----"
+        r_str = f"{cx_r:.2f}" if cx_r is not None else "----"
+        log.info(
+            f"   step={step:02d}  yaw={target_yaw:.1f}°  "
+            f"green_px={g_px} cx_g={g_str}  "
+            f"red_px={r_px} cx_r={r_str}  in_gap={in_gap}"
+        )
+        _debug_arrow_view(f, f"scan {target_yaw:.0f}° | g={g_str} r={r_str} | {'IN GAP ✓' if in_gap else 'scanning…'}")
+
+        if not mask_saved and g_px + r_px > 30:
             _save_masks(f, "spin_mask")
             mask_saved = True
 
-        if centred:
-            log.info("   ✓ arrows centred")
+        if in_gap:
+            log.info("   ✓ camera centred in gap between arrows")
             _save(f, "scan_found")
 
-            # ── snap to nearest 45° using live telemetry ──────────────────
             actual_yaw = _yaw_deg(drone)
             snapped_yaw = round(actual_yaw / 45.0) * 45.0
             if abs(actual_yaw - snapped_yaw) > 1.0:
-                log.info(f"   snapping yaw {actual_yaw:.1f}° → {snapped_yaw:.0f}°")
+                log.info(f"   snapping {actual_yaw:.1f}° → {snapped_yaw:.0f}°")
                 await yaw_to(drone, snapped_yaw)
                 await asyncio.sleep(0.3)
-                actual_after = _yaw_deg(drone)
-                log.info(f"   telemetry confirms yaw = {actual_after:.1f}°")
-            else:
-                log.info(f"   yaw {actual_yaw:.1f}° already within 1° of {snapped_yaw:.0f}° — no snap needed")
-
+            log.info(f"   final yaw = {_yaw_deg(drone):.1f}°")
             return snapped_yaw
 
     f = read_frame(drone)
     if f is not None:
         _save_masks(f, "spin_failed_mask")
-    log.warning("   full 360° sweep — arrows not centred")
+    log.warning("   full 360° sweep — gap between arrows not found")
     return None
 
 
-async def approach_arrow_sign(drone, max_steps=10, close_threshold=2500.0):
-    """Move closer to the sign using the camera as the stop condition."""
+async def approach_arrow_sign(drone, max_steps=40, bottom_frac=0.90):
+    """
+    Fly forward (body-frame) 1 m at a time.
+    Stop when the green arrow blob centroid is in the bottom bottom_frac
+    of the frame — meaning the sign is directly below/ahead of us.
+    """
     approach_yaw = _yaw_deg(drone)
-    log.info(f">> approaching the arrow sign … (heading {approach_yaw:.1f}°)")
-    best_area = 0.0
+    log.info(f">> approaching arrow sign … (heading {approach_yaw:.1f}°)")
+
     for step in range(max_steps):
         frame = read_frame(drone)
         if frame is not None:
-            best_area = max(best_area, _arrow_sign_area(frame))
-            _save(frame, f"approach_{step}")
-            _debug_arrow_view(frame, f"approach step {step} area {int(best_area)} / {int(close_threshold)}")
-            if best_area >= close_threshold:
-                log.info(f"   sign is close enough (area={best_area:.0f})")
+            g_mask, r_mask = _green_red_masks(frame)
+            h = frame.shape[0]
+
+            g_px = cv2.countNonZero(g_mask)
+            r_px = cv2.countNonZero(r_mask)
+            active = g_mask if g_px >= r_px else r_mask
+            active_px = max(g_px, r_px)
+
+            norm_cy = 0.0
+            if active_px > 50:
+                M = cv2.moments(active)
+                if M["m00"] > 0:
+                    norm_cy = (M["m01"] / M["m00"]) / h
+
+            _save(frame, f"approach_{step:02d}")
+            _debug_arrow_view(frame, f"approach {step} | cy={norm_cy*100:.1f}% / {bottom_frac*100:.0f}%  g={g_px} r={r_px}")
+            log.info(f"   step {step:02d}: cy={norm_cy*100:.1f}%  g_px={g_px}  r_px={r_px}")
+
+            if active_px > 50 and norm_cy >= bottom_frac:
+                log.info("   ✓ arrows near bottom of screen — stopping approach")
                 return frame
 
         await do(drone.move_by_velocity_body_frame_async(1.0, 0.0, 0.0, 1.0))
         await do(drone.hover_async())
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.4)
 
-    log.info(f"   stop approach at area={best_area:.0f}")
-    return None
+    log.info("   approach max steps reached")
+    return read_frame(drone)
 
 
 def detect_arrow_reliable(drone, n=20):
