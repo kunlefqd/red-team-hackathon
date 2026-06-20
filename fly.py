@@ -11,10 +11,18 @@ Drone spawns at (0, -35, -0.1).
 """
 import argparse
 import asyncio
+import base64
+import json
 import logging
 import math
 import os
 import time
+import ssl
+import urllib.request
+
+_SSL_CTX = ssl.create_default_context()
+_SSL_CTX.check_hostname = False
+_SSL_CTX.verify_mode = ssl.CERT_NONE
 
 import cv2
 import numpy as np
@@ -603,6 +611,134 @@ async def count_spheres_reliable(drone, n=24):
     return mode
 
 
+# ── Gemini vision ─────────────────────────────────────────────────────────────
+
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+_GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key="
+
+
+def _ask_gemini(frame, prompt):
+    """Send a BGR frame + text prompt to Gemini, return the response text."""
+    _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    b64 = base64.b64encode(buf).decode()
+    body = {
+        "contents": [{
+            "parts": [
+                {"text": prompt},
+                {"inline_data": {"mime_type": "image/jpeg", "data": b64}},
+            ]
+        }]
+    }
+    req = urllib.request.Request(
+        _GEMINI_URL + GEMINI_API_KEY,
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=15, context=_SSL_CTX) as resp:
+        data = json.loads(resp.read())
+    return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+
+
+async def fly_to_vehicle_gemini(drone, target):
+    """
+    Use Gemini to visually locate and navigate to the target vehicle.
+    1. Scan ±180° asking Gemini if the vehicle is visible and where.
+    2. Yaw to centre on it, then fly forward in 3-second bursts.
+    3. After each burst ask Gemini if we are close — steer left/right as needed.
+    4. Deliver: land for ICE_CREAM_TRUCK, fly into everything else.
+    """
+    log.info(f">> Gemini search for {target} …")
+
+    FIND_PROMPT = (
+        f"This image is from a drone FPV camera. "
+        f"I am looking for a {target.replace('_', ' ')}. "
+        f"Is it visible in the image? "
+        f"Reply with exactly one token: LEFT, CENTER, RIGHT, or NOTFOUND. "
+        f"LEFT/CENTER/RIGHT indicate which third of the image it appears in."
+    )
+
+    APPROACH_PROMPT = (
+        f"This image is from a drone FPV camera approaching a {target.replace('_', ' ')}. "
+        f"Is the vehicle clearly visible and large (fills ≥ 25% of frame width)? "
+        f"Where is it horizontally? "
+        f"Reply with exactly one token: CLOSE, LEFT, CENTER, RIGHT, or NOTVISIBLE."
+    )
+
+    # ── Phase 1: single wide scan — one Gemini call per heading ──────────
+    base_yaw = _yaw_deg(drone)
+    found_yaw = None
+
+    for offset in [0, 45, -45, 90, -90, 135, -135, 180]:
+        target_yaw = base_yaw + offset
+        await yaw_to(drone, target_yaw)
+        await asyncio.sleep(0.3)
+        f = read_frame(drone)
+        if f is None:
+            continue
+        _save(f, f"gemini_scan_{offset:+d}")
+        try:
+            resp = _ask_gemini(f, FIND_PROMPT).upper()
+            log.info(f"   Gemini scan offset={offset:+d}°: {resp!r}")
+            if "LEFT" in resp:
+                found_yaw = target_yaw - 20
+                break
+            elif "CENTER" in resp:
+                found_yaw = target_yaw
+                break
+            elif "RIGHT" in resp:
+                found_yaw = target_yaw + 20
+                break
+        except Exception as e:
+            log.warning(f"   Gemini error: {e}")
+
+    if found_yaw is None:
+        log.warning(f"   {target} not found — flying straight ahead")
+        found_yaw = base_yaw
+
+    await yaw_to(drone, found_yaw)
+    await asyncio.sleep(0.3)
+
+    # ── Phase 2: fly in 10-second bursts, Gemini check between each ──────
+    log.info(f">> approaching {target} …")
+    await drone.move_by_velocity_body_frame_async(5.0, 0.0, 0.0, 60.0)
+
+    for step in range(6):          # max 6 Gemini calls total in approach
+        await asyncio.sleep(10.0)  # fly 10 s before checking
+        f = read_frame(drone)
+        if f is None:
+            continue
+        _save(f, f"gemini_approach_{step:02d}")
+        try:
+            resp = _ask_gemini(f, APPROACH_PROMPT).upper()
+            log.info(f"   Gemini approach step={step}: {resp!r}")
+            if "CLOSE" in resp:
+                log.info(f"   ✓ {target} is close — delivering")
+                await do(drone.hover_async())
+                break
+            elif "LEFT" in resp:
+                await do(drone.hover_async())
+                await yaw_by(drone, -15)
+                await drone.move_by_velocity_body_frame_async(5.0, 0.0, 0.0, 60.0)
+            elif "RIGHT" in resp:
+                await do(drone.hover_async())
+                await yaw_by(drone, 15)
+                await drone.move_by_velocity_body_frame_async(5.0, 0.0, 0.0, 60.0)
+            # CENTER or NOTVISIBLE: keep flying straight
+        except Exception as e:
+            log.warning(f"   Gemini error: {e}")
+
+    # ── Phase 3: deliver ──────────────────────────────────────────────────
+    if target == "ICE_CREAM_TRUCK":
+        log.info(">> landing beside ICE_CREAM_TRUCK")
+        await do(drone.hover_async())
+        await do(drone.land_async())
+    else:
+        log.info(f">> flying into {target}")
+        await drone.move_by_velocity_body_frame_async(8.0, 0.0, 0.0, 60.0)
+        await asyncio.sleep(6.0)
+
+
 # ── Main flight ───────────────────────────────────────────────────────────────
 
 async def fly(address: str):
@@ -677,20 +813,7 @@ async def fly(address: str):
         }
         target = VEHICLE[(turn1, turn2)]
         log.info(f">> stage 3: target = {target}  (path={turn1}+{turn2})")
-
-        if target == "ICE_CREAM_TRUCK":
-            # Fly forward into the room, then land to deliver
-            log.info(">> ICE_CREAM_TRUCK: flying into room then landing")
-            await drone.move_by_velocity_body_frame_async(5.0, 0.0, 0.0, 60.0)
-            # Fly forward for 8 seconds to reach the room
-            await asyncio.sleep(8.0)
-            await do(drone.hover_async())
-            log.info(">> landing to deliver to ICE_CREAM_TRUCK")
-            await do(drone.land_async())
-        else:
-            # TANK / BOAT / JET — fly straight into the target at full speed
-            log.info(f">> {target}: flying into target at full speed")
-            await do(drone.move_by_velocity_body_frame_async(8.0, 0.0, 0.0, 20.0))
+        await fly_to_vehicle_gemini(drone, target)
 
         drone.disarm()
 
