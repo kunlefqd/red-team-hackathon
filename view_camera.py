@@ -35,6 +35,7 @@ def main():
             if frame is None:
                 continue
             frames += 1
+            print(f"Frame {frame}")
 
             # Overlay a frame counter so you can confirm the feed is live.
             cv2.putText(frame, f"{args.camera}  frame {frames}", (10, 24),

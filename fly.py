@@ -14,6 +14,8 @@ Coordinates are NED metres: +north, +east, +DOWN -- climbing is NEGATIVE z.
 """
 import argparse
 import asyncio
+import math
+import cv2
 
 from redteam_sim import connect, reset, read_frame  # noqa: F401  (reset for your use)
 
@@ -44,15 +46,47 @@ async def fly(address: str, alt: float, speed: float):
               f"x={pos.get('x', 0):.1f} y={pos.get('y', 0):.1f} z={pos.get('z', 0):.1f}")
         frame = read_frame(drone)                              # vision
         print(f"   camera frame: {None if frame is None else frame.shape}")
-
+        print(f"Frame seen: {frame}")
         print(">> waypoint: 5 m north of the start line")
-        await do(drone.move_to_position_async(5.0, -35.0, -alt, speed))
+        hover_target = (5.0, -35.0, -alt)
+        await do(drone.move_to_position_async(*hover_target, speed))
+
+        def log_hover_difference() -> None:
+            state = drone.get_estimated_kinematics()
+            pos = state.get("pose", {}).get("position", {})
+            north = float(pos.get("x", 0.0))
+            east = float(pos.get("y", 0.0))
+            down = float(pos.get("z", 0.0))
+            diff_n = north - hover_target[0]
+            diff_e = east - hover_target[1]
+            diff_d = down - hover_target[2]
+            distance = math.sqrt(diff_n * diff_n + diff_e * diff_e + diff_d * diff_d)
+            print(
+                "   hover diff (m): "
+                f"dn={diff_n:+.2f} de={diff_e:+.2f} dd={diff_d:+.2f} "
+                f"|d|={distance:.2f}"
+            )
 
         # ================================================================
         # YOUR AUTONOMY GOES HERE: loop on frame = read_frame(drone) (+ telemetry),
         # read the clues, decide the next waypoint, call move_to_position_async(...)
         # until you reach the target. To retry from the start line:  reset(drone)
         # ================================================================
+
+        while True:
+            frame = read_frame(drone)
+
+            if frame is None:
+                print("No frame yet")
+                continue
+
+            log_hover_difference()
+            print("frame shape:", frame.shape)
+
+            cv2.imshow("FPV Camera", frame)
+
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
 
         print(">> landing")
         await do(drone.land_async())
