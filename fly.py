@@ -93,40 +93,62 @@ def _save(frame, prefix):
 
 def _green_red_masks(frame):
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    green = cv2.inRange(hsv, (20, 35, 25), (95, 255, 255))
+    # Permissive ranges to handle Unreal's gamma/tone-mapping (gamma=2.5)
+    green = cv2.inRange(hsv, (35, 40, 40), (95, 255, 255))
     red = (
-        cv2.inRange(hsv, (0, 35, 25), (15, 255, 255)) |
-        cv2.inRange(hsv, (150, 35, 25), (180, 255, 255))
+        cv2.inRange(hsv, (0,  25, 25), (15, 255, 255)) |
+        cv2.inRange(hsv, (155, 25, 25), (180, 255, 255))
     )
     kern = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    green = cv2.morphologyEx(green, cv2.MORPH_OPEN, kern)
+    green = cv2.morphologyEx(green, cv2.MORPH_OPEN,  kern)
     green = cv2.morphologyEx(green, cv2.MORPH_CLOSE, kern)
-    red = cv2.morphologyEx(red, cv2.MORPH_OPEN, kern)
-    red = cv2.morphologyEx(red, cv2.MORPH_CLOSE, kern)
+    red   = cv2.morphologyEx(red,   cv2.MORPH_OPEN,  kern)
+    red   = cv2.morphologyEx(red,   cv2.MORPH_CLOSE, kern)
     return green, red
 
 
+def _save_masks(frame, tag="mask"):
+    """Save raw HSV masks side-by-side for offline tuning."""
+    g, r = _green_red_masks(frame)
+    h, w = frame.shape[:2]
+    panel = np.zeros((h, w * 3, 3), dtype=np.uint8)
+    panel[:, :w]        = frame
+    panel[:, w:2*w]     = cv2.cvtColor(g, cv2.COLOR_GRAY2BGR)
+    panel[:, 2*w:3*w]   = cv2.cvtColor(r, cv2.COLOR_GRAY2BGR)
+    ts = int(time.time() * 1000)
+    cv2.imwrite(f"logs/{tag}_{ts}.jpg", panel)
+    log.info(f"   mask saved -> logs/{tag}_{ts}.jpg  (left=frame | mid=green | right=red)")
+
+
 def _debug_arrow_view(frame, status=""):
-    """Show the live camera feed with green/red contour boxes for debugging."""
+    """Live debug window: bounding boxes, centroid line, and status text."""
     if frame is None:
         return
 
     display = frame.copy()
-    green, red = _green_red_masks(frame)
+    h, w = display.shape[:2]
+    g_mask, r_mask = _green_red_masks(frame)
 
-    for mask, color, label in ((green, (0, 255, 0), "GREEN"), (red, (0, 0, 255), "RED")):
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        for contour in contours:
-            area = cv2.contourArea(contour)
-            if area < 120:
+    for mask, color, lbl in ((g_mask, (0, 200, 0), "G"), (r_mask, (0, 0, 200), "R")):
+        cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        for c in cnts:
+            if cv2.contourArea(c) < 120:
                 continue
-            x, y, w, h = cv2.boundingRect(contour)
-            cv2.rectangle(display, (x, y), (x + w, y + h), color, 2)
-            cv2.putText(display, f"{label} {int(area)}", (x, max(15, y - 6)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
+            bx, by, bw, bh = cv2.boundingRect(c)
+            cv2.rectangle(display, (bx, by), (bx + bw, by + bh), color, 2)
+            cv2.putText(display, f"{lbl} {int(cv2.contourArea(c))}", (bx, max(14, by - 4)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1, cv2.LINE_AA)
+
+    # Draw the combined centroid as a vertical line
+    norm_cx = _arrows_centroid_norm(frame)
+    if norm_cx is not None:
+        cx_px = int(norm_cx * w)
+        cv2.line(display, (cx_px, 0), (cx_px, h), (0, 255, 255), 2)
+        cv2.line(display, (w // 2, 0), (w // 2, h), (128, 128, 128), 1)  # centre reference
 
     if status:
-        cv2.putText(display, status, (12, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(display, status, (8, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.55,
+                    (255, 255, 255), 2, cv2.LINE_AA)
 
     cv2.imshow("Arrow Debug", display)
     cv2.waitKey(1)
@@ -226,68 +248,107 @@ def _arrow_from_frame(frame):
     return None
 
 
-def has_arrow_blobs(frame, min_area=400):
-    """True if frame has both a green and a red blob of meaningful size."""
-    g, r = _green_red_masks(frame)
-    gc, _ = cv2.findContours(g, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    rc, _ = cv2.findContours(r, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    g_ok = any(cv2.contourArea(c) >= min_area * 0.5 for c in gc)
-    r_ok = any(cv2.contourArea(c) >= min_area * 0.5 for c in rc)
-    return g_ok and r_ok
-
-
-async def spin_find_arrows(drone):
+def _arrows_centroid_norm(frame):
     """
-    Sweep 360° in slow steps while hovering, return the current yaw when the
-    green/red arrow sign becomes visible.
+    Normalised horizontal centroid of the green mask pixels (0=left, 0.5=centre, 1=right).
+    Returns None when there are too few green pixels to be meaningful.
     """
-    log.info(">> spin-scan: searching for arrow room …")
-    for step in range(60):
-        hits = 0
-        areas = []
-        for _ in range(3):
-            f = read_frame(drone)
-            if f is not None:
-                areas.append(_arrow_sign_area(f))
-                if has_arrow_blobs(f):
-                    hits += 1
-                _debug_arrow_view(f, f"scan step {step:02d} hits {hits}/3")
-            time.sleep(0.1)
+    g_mask, _ = _green_red_masks(frame)
+    px = cv2.countNonZero(g_mask)
+    if px < 100:
+        return None
+    M = cv2.moments(g_mask)
+    if M["m00"] == 0:
+        return None
+    cx = M["m10"] / M["m00"]
+    return cx / frame.shape[1]
 
-        log.info(f"   step={step:02d}  arrow_hits={hits}/3  area={max(areas) if areas else 0:.0f}")
-        if hits >= 2:
-            log.info("   ✓ arrow sign confirmed")
-            f = read_frame(drone)
-            if f is not None:
-                _save(f, "scan_found")
-            return _yaw_deg(drone)
 
-        await yaw_by(drone, 6.0)
-        await do(drone.hover_async())
-        await asyncio.sleep(0.4)
+async def spin_find_arrows(drone, centre_tol=0.20):
+    """
+    Sweep in 45° steps; stop when the green arrow centroid is within
+    centre_tol of the frame centre, then snap yaw to the nearest 90°
+    multiple using telemetry so we're always axis-aligned before moving.
 
+    Returns the snapped yaw (degrees), or None after a full revolution.
+    """
+    log.info(">> spin-scan: searching for arrow sign …")
+    start_yaw = _yaw_deg(drone)
+    mask_saved = False
+
+    for step in range(36):                      # 36 × 10° = full 360°
+        target_yaw = start_yaw + step * 10.0
+        await yaw_to(drone, target_yaw)
+        await asyncio.sleep(0.2)                # let frame settle
+
+        f = read_frame(drone)
+        if f is None:
+            continue
+
+        g_mask, r_mask = _green_red_masks(f)
+        g_px = cv2.countNonZero(g_mask)
+        r_px = cv2.countNonZero(r_mask)
+        norm_cx = _arrows_centroid_norm(f)
+        centred  = norm_cx is not None and abs(norm_cx - 0.5) <= centre_tol
+
+        cx_str = f"{norm_cx:.2f}" if norm_cx is not None else "----"
+        log.info(
+            f"   step={step}  yaw={target_yaw:.1f}°  "
+            f"green_px={g_px:5d}  red_px={r_px:5d}  "
+            f"norm_cx={cx_str}  centred={centred}"
+        )
+        _debug_arrow_view(f, f"scan {target_yaw:.0f}° | cx={cx_str} | {'CENTRED ✓' if centred else 'scanning…'}")
+
+        if not mask_saved and g_px > 50:
+            _save_masks(f, "spin_mask")
+            mask_saved = True
+
+        if centred:
+            log.info("   ✓ arrows centred")
+            _save(f, "scan_found")
+
+            # ── snap to nearest 45° using live telemetry ──────────────────
+            actual_yaw = _yaw_deg(drone)
+            snapped_yaw = round(actual_yaw / 45.0) * 45.0
+            if abs(actual_yaw - snapped_yaw) > 1.0:
+                log.info(f"   snapping yaw {actual_yaw:.1f}° → {snapped_yaw:.0f}°")
+                await yaw_to(drone, snapped_yaw)
+                await asyncio.sleep(0.3)
+                actual_after = _yaw_deg(drone)
+                log.info(f"   telemetry confirms yaw = {actual_after:.1f}°")
+            else:
+                log.info(f"   yaw {actual_yaw:.1f}° already within 1° of {snapped_yaw:.0f}° — no snap needed")
+
+            return snapped_yaw
+
+    f = read_frame(drone)
+    if f is not None:
+        _save_masks(f, "spin_failed_mask")
+    log.warning("   full 360° sweep — arrows not centred")
     return None
 
 
-async def approach_arrow_sign(drone, max_steps=4):
-    """Move closer to the sign in small body-frame increments."""
-    log.info(">> approaching the arrow sign …")
+async def approach_arrow_sign(drone, max_steps=10, close_threshold=2500.0):
+    """Move closer to the sign using the camera as the stop condition."""
+    approach_yaw = _yaw_deg(drone)
+    log.info(f">> approaching the arrow sign … (heading {approach_yaw:.1f}°)")
     best_area = 0.0
     for step in range(max_steps):
         frame = read_frame(drone)
         if frame is not None:
             best_area = max(best_area, _arrow_sign_area(frame))
             _save(frame, f"approach_{step}")
-            _debug_arrow_view(frame, f"approach step {step} area {int(best_area)}")
-            if best_area >= 2500.0:
+            _debug_arrow_view(frame, f"approach step {step} area {int(best_area)} / {int(close_threshold)}")
+            if best_area >= close_threshold:
                 log.info(f"   sign is close enough (area={best_area:.0f})")
-                return
+                return frame
 
         await do(drone.move_by_velocity_body_frame_async(1.0, 0.0, 0.0, 1.0))
         await do(drone.hover_async())
         await asyncio.sleep(0.5)
 
     log.info(f"   stop approach at area={best_area:.0f}")
+    return None
 
 
 def detect_arrow_reliable(drone, n=20):
@@ -418,7 +479,6 @@ async def fly(address: str):
         await do(drone.move_to_position_async(0.0, -35.0, -ALT, SPEED))
         await do(drone.hover_async())
         
-        
         log.info(">> hovering and scanning for the green/red arrow sign")
         cv2.namedWindow("Arrow Debug", cv2.WINDOW_NORMAL)
         scan_yaw = await spin_find_arrows(drone)
@@ -429,10 +489,14 @@ async def fly(address: str):
             return
 
         log.info(">> flying near the arrow sign")
-        await approach_arrow_sign(drone)
+        close_frame = await approach_arrow_sign(drone)
+        if close_frame is None:
+            log.warning(">> did not reach the close-view threshold, continuing to direction readout")
 
         log.info(">> reading arrow direction")
-        turn1 = detect_arrow_reliable(drone)
+        turn1 = _arrow_from_frame(close_frame) if close_frame is not None else None
+        if turn1 is None:
+            turn1 = detect_arrow_reliable(drone)
         log.info(f">> green arrow points {turn1}")
 
         # Turn 90 degrees toward the side with the green arrow.
