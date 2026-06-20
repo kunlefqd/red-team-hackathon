@@ -30,9 +30,9 @@ class VLMResponse(BaseModel):
                     "in the frame. False if absent, occluded, or ambiguous."
     )
 
-    bbox_center_px: Optional[tuple[int, int]] = Field(
+    bbox_center_px: Optional[list[int]] = Field(
         default=None,
-        description="(x, y) integer pixel coordinates of the target's center in a "
+        description="[x, y] integer pixel coordinates of the target's center in a "
                     "640x480 frame, origin at top-left. Null if target_visible is false.",
     )
 
