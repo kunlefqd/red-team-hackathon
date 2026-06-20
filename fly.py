@@ -11,18 +11,12 @@ Drone spawns at (0, -35, -0.1).
 """
 import argparse
 import asyncio
-import base64
-import json
 import logging
 import math
 import os
 import time
-import ssl
-import urllib.request
 
-_SSL_CTX = ssl.create_default_context()
-_SSL_CTX.check_hostname = False
-_SSL_CTX.verify_mode = ssl.CERT_NONE
+
 
 import cv2
 import numpy as np
@@ -41,6 +35,23 @@ logging.basicConfig(
     ],
 )
 log = logging.getLogger(__name__)
+
+# ── Decision log (machine-readable timestamped action trace) ──────────────────
+_dlog_path = f"logs/decisions_{int(time.time())}.log"
+_dlog = logging.getLogger("decisions")
+_dlog.setLevel(logging.INFO)
+_dlog.addHandler(logging.FileHandler(_dlog_path))
+_dlog.addHandler(logging.StreamHandler())
+_dlog.propagate = False
+_dlog_fmt = logging.Formatter("[%(asctime)s.%(msecs)03d] %(message)s", datefmt="%H:%M:%S")
+for h in _dlog.handlers:
+    h.setFormatter(_dlog_fmt)
+
+
+def decision(stage: str, cue: str, action: str, **kwargs):
+    """Log a single timestamped control decision with its visual trigger."""
+    extras = "  ".join(f"{k}={v}" for k, v in kwargs.items())
+    _dlog.info(f"STAGE={stage:<18s}  CUE={cue:<40s}  ACTION={action:<35s}  {extras}")
 
 # ── Flight constants ──────────────────────────────────────────────────────────
 ALT = 5.0        # cruise altitude (m above ground → z = -3)
@@ -384,11 +395,16 @@ async def spin_find_arrows(drone, min_each=15):
         if in_gap:
             log.info("   ✓ camera centred in gap between arrows")
             _save(f, "scan_found")
+            decision("1_ARROW_SCAN", f"gap detected: cx_g={g_str} cx_r={r_str}",
+                     f"stop spin at yaw={target_yaw:.1f}°",
+                     green_px=g_px, red_px=r_px, step=step)
 
             actual_yaw = _yaw_deg(drone)
             snapped_yaw = round(actual_yaw / 45.0) * 45.0
             if abs(actual_yaw - snapped_yaw) > 1.0:
                 log.info(f"   snapping {actual_yaw:.1f}° → {snapped_yaw:.0f}°")
+                decision("1_ARROW_SCAN", f"yaw drift {actual_yaw:.1f}° vs nearest 45°",
+                         f"snap to {snapped_yaw:.0f}°")
                 await yaw_to(drone, snapped_yaw)
                 await asyncio.sleep(0.3)
             log.info(f"   final yaw = {_yaw_deg(drone):.1f}°")
@@ -397,6 +413,7 @@ async def spin_find_arrows(drone, min_each=15):
     f = read_frame(drone)
     if f is not None:
         _save_masks(f, "spin_failed_mask")
+    decision("1_ARROW_SCAN", "full 360° — no gap found", "abort scan, return None")
     log.warning("   full 360° sweep — gap between arrows not found")
     return None
 
@@ -435,11 +452,16 @@ async def approach_arrow_sign(drone, bottom_frac=0.90):
 
             if active_px > 50 and norm_cy >= bottom_frac:
                 log.info("   ✓ arrows near bottom — stopping")
+                decision("1_ARROW_APPROACH",
+                         f"norm_cy={norm_cy*100:.1f}% >= {bottom_frac*100:.0f}%",
+                         "hover — sign is close enough",
+                         active_px=active_px, g_px=g_px, r_px=r_px, step=step)
                 await do(drone.hover_async())
                 return frame
 
         step += 1
 
+    decision("1_ARROW_APPROACH", "max iterations reached", "hover and continue")
     log.info("   approach max iterations reached")
     await do(drone.hover_async())
     return read_frame(drone)
@@ -549,11 +571,16 @@ async def approach_blue_spheres(drone, bottom_frac=0.80):
 
             if count > 0 and norm_cy >= bottom_frac:
                 log.info("   ✓ spheres in bottom 20% — stopping")
+                decision("2_SPHERE_APPROACH",
+                         f"norm_cy={norm_cy*100:.1f}% >= {bottom_frac*100:.0f}%  spheres={count}",
+                         "hover — spheres close enough",
+                         step=step)
                 await do(drone.hover_async())
                 return
 
         step += 1
 
+    decision("2_SPHERE_APPROACH", "max iterations reached", "hover and continue")
     log.info("   approach_spheres max iterations reached")
     await do(drone.hover_async())
 
@@ -603,140 +630,100 @@ async def count_spheres_reliable(drone, n=24):
 
     nonzero = [c for c in all_counts if c > 0]
     if not nonzero:
+        decision("2_SPHERE_COUNT", "all frames returned 0 spheres", "default to 1 (ODD→RIGHT)",
+                 raw_counts=str(all_counts))
         log.warning("!! sphere detection failed — defaulting to 1 (ODD)")
         return 1
 
     mode = max(set(nonzero), key=nonzero.count)
-    log.info(f"   sphere count = {mode} ({'ODD → RIGHT' if mode % 2 else 'EVEN → LEFT'})")
+    turn = "ODD→RIGHT" if mode % 2 else "EVEN→LEFT"
+    decision("2_SPHERE_COUNT",
+             f"modal count={mode}  raw={all_counts}",
+             f"turn {turn}",
+             nonzero_frames=len(nonzero), total_frames=len(all_counts))
+    log.info(f"   sphere count = {mode} ({turn})")
     return mode
 
 
-# ── Gemini vision ─────────────────────────────────────────────────────────────
+# ── Stage 3: fly to ambulance and land ────────────────────────────────────────
 
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-_GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key="
-
-
-def _ask_gemini(frame, prompt):
-    """Send a BGR frame + text prompt to Gemini, return the response text."""
-    _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
-    b64 = base64.b64encode(buf).decode()
-    body = {
-        "contents": [{
-            "parts": [
-                {"text": prompt},
-                {"inline_data": {"mime_type": "image/jpeg", "data": b64}},
-            ]
-        }]
-    }
-    req = urllib.request.Request(
-        _GEMINI_URL + GEMINI_API_KEY,
-        data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json"},
-        method="POST",
+def _red_vehicle_mask(frame):
+    """Return a mask of the red ambulance body (broad red HSV range)."""
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    mask = (
+        cv2.inRange(hsv, (0,  80, 80), (10, 255, 255)) |
+        cv2.inRange(hsv, (160, 80, 80), (180, 255, 255))
     )
-    with urllib.request.urlopen(req, timeout=15, context=_SSL_CTX) as resp:
-        data = json.loads(resp.read())
-    return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+    kern = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kern)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN,  kern)
+    return mask
 
 
-async def fly_to_vehicle_gemini(drone, target):
-    """
-    Use Gemini to visually locate and navigate to the target vehicle.
-    1. Scan ±180° asking Gemini if the vehicle is visible and where.
-    2. Yaw to centre on it, then fly forward in 3-second bursts.
-    3. After each burst ask Gemini if we are close — steer left/right as needed.
-    4. Deliver: land for ICE_CREAM_TRUCK, fly into everything else.
-    """
-    log.info(f">> Gemini search for {target} …")
-
-    FIND_PROMPT = (
-        f"This image is from a drone FPV camera. "
-        f"I am looking for a {target.replace('_', ' ')}. "
-        f"Is it visible in the image? "
-        f"Reply with exactly one token: LEFT, CENTER, RIGHT, or NOTFOUND. "
-        f"LEFT/CENTER/RIGHT indicate which third of the image it appears in."
-    )
-
-    APPROACH_PROMPT = (
-        f"This image is from a drone FPV camera approaching a {target.replace('_', ' ')}. "
-        f"Is the vehicle clearly visible and large (fills ≥ 25% of frame width)? "
-        f"Where is it horizontally? "
-        f"Reply with exactly one token: CLOSE, LEFT, CENTER, RIGHT, or NOTVISIBLE."
-    )
-
-    # ── Phase 1: single wide scan — one Gemini call per heading ──────────
-    base_yaw = _yaw_deg(drone)
-    found_yaw = None
-
-    for offset in [0, 45, -45, 90, -90, 135, -135, 180]:
-        target_yaw = base_yaw + offset
-        await yaw_to(drone, target_yaw)
-        await asyncio.sleep(0.3)
-        f = read_frame(drone)
-        if f is None:
+def _debug_vehicle_view(frame, status=""):
+    """Live debug window showing red vehicle detection."""
+    if frame is None:
+        return
+    display = frame.copy()
+    h, w = frame.shape[:2]
+    mask = _red_vehicle_mask(frame)
+    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    for c in cnts:
+        if cv2.contourArea(c) < 200:
             continue
-        _save(f, f"gemini_scan_{offset:+d}")
-        try:
-            resp = _ask_gemini(f, FIND_PROMPT).upper()
-            log.info(f"   Gemini scan offset={offset:+d}°: {resp!r}")
-            if "LEFT" in resp:
-                found_yaw = target_yaw - 20
-                break
-            elif "CENTER" in resp:
-                found_yaw = target_yaw
-                break
-            elif "RIGHT" in resp:
-                found_yaw = target_yaw + 20
-                break
-        except Exception as e:
-            log.warning(f"   Gemini error: {e}")
+        bx, by, bw, bh = cv2.boundingRect(c)
+        cv2.rectangle(display, (bx, by), (bx + bw, by + bh), (0, 0, 255), 2)
+    # horizon line for reference
+    cv2.line(display, (0, h // 2), (w, h // 2), (128, 128, 128), 1)
+    if status:
+        cv2.putText(display, status, (8, 22), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55, (255, 255, 255), 2, cv2.LINE_AA)
+    cv2.imshow("Vehicle Debug", display)
+    cv2.waitKey(1)
 
-    if found_yaw is None:
-        log.warning(f"   {target} not found — flying straight ahead")
-        found_yaw = base_yaw
 
-    await yaw_to(drone, found_yaw)
-    await asyncio.sleep(0.3)
-
-    # ── Phase 2: fly in 10-second bursts, Gemini check between each ──────
-    log.info(f">> approaching {target} …")
+async def fly_to_ambulance_and_land(drone, bottom_frac=0.85):
+    """
+    Fly forward continuously.  Poll frames every 0.1 s.
+    Stop and land when the red ambulance centroid reaches bottom_frac of frame.
+    """
+    log.info(">> stage 3: flying toward ambulance …")
     await drone.move_by_velocity_body_frame_async(5.0, 0.0, 0.0, 60.0)
 
-    for step in range(6):          # max 6 Gemini calls total in approach
-        await asyncio.sleep(10.0)  # fly 10 s before checking
+    step = 0
+    while step < 300:
+        await asyncio.sleep(0.1)
         f = read_frame(drone)
         if f is None:
+            step += 1
             continue
-        _save(f, f"gemini_approach_{step:02d}")
-        try:
-            resp = _ask_gemini(f, APPROACH_PROMPT).upper()
-            log.info(f"   Gemini approach step={step}: {resp!r}")
-            if "CLOSE" in resp:
-                log.info(f"   ✓ {target} is close — delivering")
-                await do(drone.hover_async())
-                break
-            elif "LEFT" in resp:
-                await do(drone.hover_async())
-                await yaw_by(drone, -15)
-                await drone.move_by_velocity_body_frame_async(5.0, 0.0, 0.0, 60.0)
-            elif "RIGHT" in resp:
-                await do(drone.hover_async())
-                await yaw_by(drone, 15)
-                await drone.move_by_velocity_body_frame_async(5.0, 0.0, 0.0, 60.0)
-            # CENTER or NOTVISIBLE: keep flying straight
-        except Exception as e:
-            log.warning(f"   Gemini error: {e}")
 
-    # ── Phase 3: deliver ──────────────────────────────────────────────────
-    if target == "ICE_CREAM_TRUCK":
-        log.info(">> landing beside ICE_CREAM_TRUCK")
-        await do(drone.hover_async())
-        await do(drone.land_async())
-    else:
-        log.info(f">> flying into {target}")
-        await drone.move_by_velocity_body_frame_async(8.0, 0.0, 0.0, 60.0)
-        await asyncio.sleep(6.0)
+        mask = _red_vehicle_mask(f)
+        red_px = cv2.countNonZero(mask)
+        norm_cy = 0.0
+        if red_px > 200:
+            M = cv2.moments(mask)
+            if M["m00"] > 0:
+                norm_cy = (M["m01"] / M["m00"]) / f.shape[0]
+
+        _debug_vehicle_view(f, f"step={step:03d}  red_px={red_px}  cy={norm_cy*100:.1f}%")
+        log.info(f"   vehicle step={step:03d}  red_px={red_px}  cy={norm_cy*100:.1f}%")
+
+        if red_px > 200 and norm_cy >= bottom_frac:
+            decision("3_VEHICLE_APPROACH",
+                     f"red_px={red_px}  norm_cy={norm_cy*100:.1f}% >= {bottom_frac*100:.0f}%",
+                     "hover and land beside ambulance", step=step)
+            log.info("   ✓ ambulance at bottom of frame — landing")
+            await do(drone.hover_async())
+            await do(drone.land_async())
+            return
+
+        step += 1
+
+    decision("3_VEHICLE_APPROACH", "max iterations — ambulance not detected", "land anyway")
+    log.info("   max iterations reached — landing")
+    await do(drone.hover_async())
+    await do(drone.land_async())
 
 
 # ── Main flight ───────────────────────────────────────────────────────────────
@@ -776,6 +763,8 @@ async def fly(address: str):
         if turn1 is None:
             turn1 = detect_arrow_reliable(drone)
         log.info(f">> green arrow points {turn1}")
+        decision("1_ARROW_READ", f"green arrow direction={turn1}",
+                 f"yaw {'-90°' if turn1 == 'LEFT' else '+90°'} toward green arrow")
 
         # Turn 90 degrees toward the side with the green arrow.
         delta = -90.0 if turn1 == "LEFT" else 90.0
@@ -794,6 +783,8 @@ async def fly(address: str):
         # Even → LEFT, Odd → RIGHT
         turn2 = "LEFT" if sphere_count % 2 == 0 else "RIGHT"
         delta2 = -90.0 if turn2 == "LEFT" else 90.0
+        decision("2_SPHERE_TURN", f"sphere_count={sphere_count} ({'even' if sphere_count%2==0 else 'odd'})",
+                 f"yaw {delta2:+.0f}° → {turn2}", sphere_count=sphere_count)
         log.info(f">> stage 2 complete: spheres={sphere_count} → turning {turn2} ({delta2:+.0f}°)")
         await yaw_by(drone, delta2)
         # Snap to nearest 90° for accuracy
@@ -801,19 +792,15 @@ async def fly(address: str):
         snapped_yaw = round(actual_yaw / 90.0) * 90.0
         if abs(actual_yaw - snapped_yaw) > 1.0:
             log.info(f"   snapping {actual_yaw:.1f}° → {snapped_yaw:.0f}°")
+            decision("2_SPHERE_TURN", f"yaw drift {actual_yaw:.1f}° vs nearest 90°",
+                     f"snap to {snapped_yaw:.0f}°")
             await yaw_to(drone, snapped_yaw)
         await do(drone.hover_async())
 
-        # ── Stage 3: determine vehicle and deliver ────────────────────────
-        VEHICLE = {
-            ("LEFT",  "LEFT"):  "TANK",
-            ("LEFT",  "RIGHT"): "BOAT",
-            ("RIGHT", "LEFT"):  "JET",
-            ("RIGHT", "RIGHT"): "ICE_CREAM_TRUCK",
-        }
-        target = VEHICLE[(turn1, turn2)]
-        log.info(f">> stage 3: target = {target}  (path={turn1}+{turn2})")
-        await fly_to_vehicle_gemini(drone, target)
+        # ── Stage 3: fly to ambulance and land ───────────────────────────
+        log.info(f">> stage 3: flying to ambulance  (path={turn1}+{turn2})")
+        cv2.namedWindow("Vehicle Debug", cv2.WINDOW_NORMAL)
+        await fly_to_ambulance_and_land(drone)
 
         drone.disarm()
 
