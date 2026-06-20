@@ -16,6 +16,7 @@ import argparse
 import asyncio
 import math
 import cv2
+import numpy as np
 
 from redteam_sim import connect, reset, read_frame  # noqa: F401  (reset for your use)
 
@@ -24,7 +25,27 @@ async def do(cmd):
     """Send a *_async() flight command and wait until the maneuver finishes.
     (They return a task immediately; awaiting the task blocks until it's done.)"""
     await (await cmd)
+def frame_difference_data(prev_frame, frame):
+    prev_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
+    diff = cv2.absdiff(prev_gray, gray)
+
+    mean_diff = diff.mean()
+    max_diff = diff.max()
+
+    _, threshold = cv2.threshold(diff, 25, 255, cv2.THRESH_BINARY)
+
+    changed_pixels = cv2.countNonZero(threshold)
+    total_pixels = diff.shape[0] * diff.shape[1]
+    percent_changed = 100 * changed_pixels / total_pixels
+
+    return {
+        "mean_diff": mean_diff,
+        "max_diff": max_diff,
+        "changed_pixels": changed_pixels,
+        "percent_changed": percent_changed,
+    }
 
 async def fly(address: str, alt: float, speed: float):
     client, world, drone = connect(address)   # connects + spawns the drone at the start line
@@ -73,14 +94,24 @@ async def fly(address: str, alt: float, speed: float):
         # until you reach the target. To retry from the start line:  reset(drone)
         # ================================================================
 
+        prev = None
         while True:
             frame = read_frame(drone)
 
             if frame is None:
                 print("No frame yet")
                 continue
-
+            
             log_hover_difference()
+            if prev is not None:
+                data = frame_difference_data(prev, frame)
+
+                print(
+                    f"mean_diff={data['mean_diff']:.2f} "
+                    f"max_diff={data['max_diff']} "
+                    f"changed={data['percent_changed']:.2f}%"
+                )
+            prev = frame.copy()
             print("frame shape:", frame.shape)
 
             cv2.imshow("FPV Camera", frame)
