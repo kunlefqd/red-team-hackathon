@@ -154,6 +154,57 @@ def _debug_arrow_view(frame, status=""):
     cv2.waitKey(1)
 
 
+def _debug_sphere_view(frame, status=""):
+    """Live debug window: blue/purple sphere contours, below-horizon only."""
+    if frame is None:
+        return
+
+    display = frame.copy()
+    h, w = frame.shape[:2]
+    horizon = h // 2
+
+    # Draw horizon line so it's obvious where the cutoff is
+    cv2.line(display, (0, horizon), (w, horizon), (0, 255, 255), 1)
+
+    roi = frame[horizon:, :]
+    blurred = cv2.GaussianBlur(roi, (9, 9), 2)
+    hsv = cv2.cvtColor(blurred, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, (100, 120, 80), (140, 255, 255))
+    kern = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kern)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kern)
+
+    rh, rw = roi.shape[:2]
+    min_area = 150
+    max_area = (rh * rw) // 5
+    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    count = 0
+    for c in cnts:
+        area = cv2.contourArea(c)
+        if not (min_area <= area <= max_area):
+            continue
+        perim = cv2.arcLength(c, True)
+        if perim == 0:
+            continue
+        circ = 4 * math.pi * area / (perim ** 2)
+        bx, by, bw, bh = cv2.boundingRect(c)
+        # offset back into full-frame coordinates
+        by += horizon
+        color = (0, 200, 255) if circ >= 0.3 else (60, 60, 60)
+        cv2.rectangle(display, (bx, by), (bx + bw, by + bh), color, 2)
+        cv2.putText(display, f"c={circ:.2f}", (bx, max(horizon + 14, by - 4)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1, cv2.LINE_AA)
+        if circ >= 0.3:
+            count += 1
+
+    label = f"spheres={count}  {status}"
+    cv2.putText(display, label, (8, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.55,
+                (255, 255, 255), 2, cv2.LINE_AA)
+    cv2.imshow("Sphere Debug", display)
+    cv2.waitKey(1)
+
+
 def _arrow_sign_area(frame):
     """Return a simple area score for the green/red sign; larger means closer."""
     if frame is None:
@@ -415,13 +466,17 @@ def detect_arrow_reliable(drone, n=20):
 
 def _count_spheres(frame):
     """
-    Count blue spheres in a single frame using HSV + contour circularity.
+    Count blue/purple spheres in a single frame using HSV + contour circularity.
+    Only searches the bottom half of the frame to avoid false positives from sky.
     """
-    blurred = cv2.GaussianBlur(frame, (9, 9), 2)
+    h, w = frame.shape[:2]
+    horizon = h // 2
+    roi = frame[horizon:, :]          # bottom half only
+
+    blurred = cv2.GaussianBlur(roi, (9, 9), 2)
     hsv = cv2.cvtColor(blurred, cv2.COLOR_BGR2HSV)
 
-    # Wide blue range (accounts for Unreal gamma/tone-mapping)
-    mask = cv2.inRange(hsv, (85, 60, 60), (135, 255, 255))
+    mask = cv2.inRange(hsv, (100, 120, 80), (140, 255, 255))
 
     kern = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kern)
@@ -429,9 +484,9 @@ def _count_spheres(frame):
 
     cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    h, w = frame.shape[:2]
+    rh, rw = roi.shape[:2]
     min_area = 150
-    max_area = (h * w) // 5
+    max_area = (rh * rw) // 5
 
     spheres = 0
     for c in cnts:
@@ -447,53 +502,104 @@ def _count_spheres(frame):
     return spheres
 
 
+async def approach_blue_spheres(drone, bottom_frac=0.80):
+    """
+    Move forward smoothly until blue spheres are in the bottom 20% of frame.
+    Uses the same continuous-velocity pattern as approach_arrow_sign.
+    """
+    log.info(">> moving forward to find blue spheres …")
+    await drone.move_by_velocity_body_frame_async(3.0, 0.0, 0.0, 60.0)
+
+    step = 0
+    while step < 200:
+        await asyncio.sleep(0.1)
+        f = read_frame(drone)
+        if f is not None:
+            h = f.shape[0]
+            horizon = h // 2
+            roi = f[horizon:, :]
+
+            blurred = cv2.GaussianBlur(roi, (9, 9), 2)
+            hsv = cv2.cvtColor(blurred, cv2.COLOR_BGR2HSV)
+            mask = cv2.inRange(hsv, (100, 120, 80), (140, 255, 255))
+            kern = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kern)
+            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kern)
+
+            # centroid of all blue pixels in the ROI, mapped back to full frame
+            norm_cy = 0.0
+            if cv2.countNonZero(mask) > 50:
+                M = cv2.moments(mask)
+                if M["m00"] > 0:
+                    roi_cy = M["m01"] / M["m00"]           # y within ROI
+                    full_cy = (horizon + roi_cy) / h       # y in full frame
+                    norm_cy = full_cy
+
+            count = _count_spheres(f)
+            _debug_sphere_view(f, f"step={step:03d} cy={norm_cy*100:.1f}%")
+            log.info(f"   step={step:03d}  spheres={count}  cy={norm_cy*100:.1f}%")
+
+            if count > 0 and norm_cy >= bottom_frac:
+                log.info("   ✓ spheres in bottom 20% — stopping")
+                await do(drone.hover_async())
+                return
+
+        step += 1
+
+    log.info("   approach_spheres max iterations reached")
+    await do(drone.hover_async())
+
+
 async def count_spheres_reliable(drone, n=24):
     """
-    Rotate ±30° looking for the best sphere count, then vote across frames.
+    Scan ±30° relative to current heading for the angle showing the most
+    spheres, then vote across n frames at that angle.
     Returns the modal nonzero count (defaults to 1 = ODD on failure).
     """
+    base_yaw = _yaw_deg(drone)
     best_count = 0
-    best_yaw = 0
+    best_yaw = base_yaw
 
-    # Scan yaw range to find the angle with the most spheres
-    for yaw in (0, 15, -15, 30, -30):
-        await yaw_to(drone, yaw)
-        await asyncio.sleep(0.5)
+    for offset in (0, 15, -15, 30, -30):
+        target = base_yaw + offset
+        await yaw_to(drone, target)
+        await asyncio.sleep(0.4)
         counts = []
         for _ in range(4):
             f = read_frame(drone)
             if f is not None:
                 counts.append(_count_spheres(f))
-            time.sleep(0.08)
+            await asyncio.sleep(0.08)
         avg = sum(counts) / len(counts) if counts else 0
-        log.info(f"   sphere scan yaw={yaw}°: counts={counts} avg={avg:.1f}")
+        log.info(f"   sphere scan offset={offset:+d}°: counts={counts} avg={avg:.1f}")
         if avg > best_count:
             best_count = avg
-            best_yaw = yaw
+            best_yaw = target
 
-    # Lock onto the best yaw and vote across more frames
     await yaw_to(drone, best_yaw)
-    await asyncio.sleep(0.5)
+    await asyncio.sleep(0.4)
 
     all_counts = []
     for _ in range(n):
         f = read_frame(drone)
         if f is None:
-            time.sleep(0.05)
+            await asyncio.sleep(0.05)
             continue
         _save(f, "spheres")
-        all_counts.append(_count_spheres(f))
-        time.sleep(0.05)
+        c = _count_spheres(f)
+        _debug_sphere_view(f, f"voting n={len(all_counts)}")
+        all_counts.append(c)
+        await asyncio.sleep(0.05)
 
-    log.info(f"   Sphere raw counts: {all_counts}")
+    log.info(f"   sphere raw counts: {all_counts}")
 
     nonzero = [c for c in all_counts if c > 0]
     if not nonzero:
-        log.warning("!! Sphere detection failed — defaulting to 1 (ODD)")
+        log.warning("!! sphere detection failed — defaulting to 1 (ODD)")
         return 1
 
-    # Modal value among nonzero counts
     mode = max(set(nonzero), key=nonzero.count)
+    log.info(f"   sphere count = {mode} ({'ODD → RIGHT' if mode % 2 else 'EVEN → LEFT'})")
     return mode
 
 
@@ -516,6 +622,7 @@ async def fly(address: str):
         
         log.info(">> hovering and scanning for the green/red arrow sign")
         cv2.namedWindow("Arrow Debug", cv2.WINDOW_NORMAL)
+        cv2.namedWindow("Sphere Debug", cv2.WINDOW_NORMAL)
         scan_yaw = await spin_find_arrows(drone)
         if scan_yaw is None:
             log.warning(">> no arrow sign found after a full slow scan")
@@ -540,8 +647,51 @@ async def fly(address: str):
         await yaw_by(drone, delta)
         await do(drone.hover_async())
 
-        log.info(">> first stage complete")
-        await do(drone.land_async())
+        # ── Stage 2: fly forward until blue spheres visible, then count ──
+        log.info(">> stage 2: approaching blue spheres")
+        await approach_blue_spheres(drone)
+
+        log.info(">> stage 2: counting blue spheres")
+        sphere_count = await count_spheres_reliable(drone)
+        log.info(f">> sphere count = {sphere_count}")
+
+        # Even → LEFT, Odd → RIGHT
+        turn2 = "LEFT" if sphere_count % 2 == 0 else "RIGHT"
+        delta2 = -90.0 if turn2 == "LEFT" else 90.0
+        log.info(f">> stage 2 complete: spheres={sphere_count} → turning {turn2} ({delta2:+.0f}°)")
+        await yaw_by(drone, delta2)
+        # Snap to nearest 90° for accuracy
+        actual_yaw = _yaw_deg(drone)
+        snapped_yaw = round(actual_yaw / 90.0) * 90.0
+        if abs(actual_yaw - snapped_yaw) > 1.0:
+            log.info(f"   snapping {actual_yaw:.1f}° → {snapped_yaw:.0f}°")
+            await yaw_to(drone, snapped_yaw)
+        await do(drone.hover_async())
+
+        # ── Stage 3: determine vehicle and deliver ────────────────────────
+        VEHICLE = {
+            ("LEFT",  "LEFT"):  "TANK",
+            ("LEFT",  "RIGHT"): "BOAT",
+            ("RIGHT", "LEFT"):  "JET",
+            ("RIGHT", "RIGHT"): "ICE_CREAM_TRUCK",
+        }
+        target = VEHICLE[(turn1, turn2)]
+        log.info(f">> stage 3: target = {target}  (path={turn1}+{turn2})")
+
+        if target == "ICE_CREAM_TRUCK":
+            # Fly forward into the room, then land to deliver
+            log.info(">> ICE_CREAM_TRUCK: flying into room then landing")
+            await drone.move_by_velocity_body_frame_async(5.0, 0.0, 0.0, 60.0)
+            # Fly forward for 8 seconds to reach the room
+            await asyncio.sleep(8.0)
+            await do(drone.hover_async())
+            log.info(">> landing to deliver to ICE_CREAM_TRUCK")
+            await do(drone.land_async())
+        else:
+            # TANK / BOAT / JET — fly straight into the target at full speed
+            log.info(f">> {target}: flying into target at full speed")
+            await do(drone.move_by_velocity_body_frame_async(8.0, 0.0, 0.0, 20.0))
+
         drone.disarm()
 
     finally:
