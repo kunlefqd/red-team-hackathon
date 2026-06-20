@@ -1,0 +1,12 @@
+# ProjectAirSim challenge client dependencies -- all bundled in ./wheels for
+# OFFLINE install. Requires Python 3.12 (the numpy/pynng/msgpack/cffi wheels
+# are built for cp312).
+#
+# From THIS directory, in a fresh venv:
+#   python3.12 -m venv .venv
+#   source .venv/bin/activate                  # Windows: .venv\Scripts\activate
+#   pip install --no-index --find-links wheels -r requirements.txt
+#
+# (Drop --no-index to allow PyPI fallback if you're online / on another Python.)
+--find-links ./wheels
+projectairsim==1.0.0

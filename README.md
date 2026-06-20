@@ -100,7 +100,44 @@ there's no single answer to memorise.
 ## Flying by code — the API
 
 You pilot the drone from a **Python script**. While the game is running it hosts a sim server
-on ports **8989 / 8990**; connect with the ProjectAirSim Python client:
+on ports **8989 / 8990**; connect with the ProjectAirSim Python client.
+
+### Set up the client (one time)
+
+Requires **Python 3.12** (the bundled wheels are built for it). Everything installs
+**offline** from `./wheels` — no internet needed:
+
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate            # Windows: .venv\Scripts\activate
+pip install --no-index --find-links wheels -r requirements.txt
+```
+
+(Online and on a different Python? Drop `--no-index` to allow PyPI fallback.)
+
+### Quickstart
+
+The `redteam_sim` helper handles connecting, spawning, resetting, and reading the camera.
+Copy **`fly.py`** and build on it, or start fresh:
+
+```python
+from redteam_sim import connect, reset, read_frame
+
+client, world, drone = connect()             # connect + spawn Drone1 at the start line
+drone.enable_api_control(); drone.arm()
+await (await drone.takeoff_async())          # *_async returns a task — await it to finish
+
+frame = read_frame(drone)                    # BGR numpy image -> your vision
+state = drone.get_estimated_kinematics()     # onboard estimate (allowed in HARD)
+
+reset(drone)                                 # teleport back to the start line to retry
+client.disconnect()                          # when done
+```
+
+Run the starter once the game is up: `python fly.py`. Deeper reference:
+[`docs/ProjectAirSim_API_Guide.md`](docs/ProjectAirSim_API_Guide.md).
+
+### Or connect directly
 
 ```python
 from projectairsim import ProjectAirSimClient, World, Drone
@@ -136,7 +173,9 @@ start-line origin, and the camera ids are what the course and the `RaceManager` 
   | `GPS1` | gps | `get_gps_data("GPS1")` — **EASY only** |
   | `Battery` | battery | `get_battery_state("Battery")` |
 
-**Commanding the drone:**
+**Commanding the drone:** the `*_async` calls return a task — **await it twice**:
+`await (await drone.takeoff_async())`. The table lists them singly for brevity; wrap each in
+a `do()` helper (`async def do(c): await (await c)`) as `fly.py` does.
 
 | Call | Does |
 |------|------|
@@ -206,6 +245,19 @@ Still allowed in HARD: every command above (including `move_to_position_async` �
 tracks the setpoint from its *own* estimate, exactly like real life), `get_estimated_kinematics`,
 the onboard sensors (`IMU1`, `Barometer1`, `Magnetometer1`, `Battery`), and the **camera**
 (`get_images`). Read the clues with the camera and fly by estimate.
+
+## Files
+
+| File | What it is |
+|---|---|
+| `fly.py` | copy-me autonomous-flight starter |
+| `view_camera.py` | live OpenCV window of the drone camera feed |
+| `smoke_test.py` | end-to-end check your setup works (`python smoke_test.py`) |
+| `redteam_sim.py` | helper library — `connect()`, `reset()`, `read_frame()` |
+| `sim_config/` | scene + drone config (`sf_scene.jsonc`, `sf_robot.jsonc`) — use as-is |
+| `requirements.txt` · `wheels/` | offline Python client install |
+| `docs/ProjectAirSim_API_Guide.md` | deeper API reference |
+| `Red_Team_Hack_Sim.sh` / `.exe` | the game build (dropped in next to these files) |
 
 ## Troubleshooting
 

@@ -1,0 +1,35 @@
+{
+  // Red Team Hack Sim scene: spawns the challenge drone (Drone1) into whatever
+  // level is currently loaded (RedRoad / RedRoad2). The clock free-runs at real
+  // time so the simple-flight controller stabilizes continuously.
+  "id": "SceneSimpleFlightTeleop",
+  "actors": [
+    {
+      "type": "robot",
+      "name": "Drone1",
+      "origin": {
+        // The start line. Must match sf_teleop.py --spawn (where reset teleports
+        // back to) so the drone appears at the start directly with no startup
+        // jump — the RaceManager captures this first-seen spot as the start.
+        "xyz": "0.0 -35.0 -0.1",
+        "rpy-deg": "0 0 0"
+      },
+      "robot-config": "sf_robot.jsonc"
+    }
+  ],
+  "clock": {
+    "type": "steppable",
+    // 3 ms wall-paced steps (~333 Hz). real-time-update-rate makes the clock
+    // self-advance at real time, so no manual world.step() loop is needed —
+    // the teleop just streams gamepad setpoints.
+    "step-ns": 3000000,
+    "real-time-update-rate": 3000000,
+    "pause-on-start": false
+  },
+  "home-geo-point": {
+    "latitude": 47.641468,
+    "longitude": -122.140165,
+    "altitude": 122.0
+  },
+  "scene-type": "UnrealNative"
+}

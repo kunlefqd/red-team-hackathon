@@ -1,0 +1,75 @@
+#!/usr/bin/env python3
+"""fly.py - autonomous-flight starter (SimpleFlight). Copy this and build on it.
+
+Shows the two data sources your autonomy needs plus how to command the drone,
+using the redteam_sim helper library -- all over one client connection:
+  * CONTROL + TELEMETRY  via the ProjectAirSim client (arm / takeoff / move / state)
+  * VIDEO                via read_frame(drone) -> BGR numpy image
+
+Launch the game first (see README), then run this:
+    python fly.py
+
+Retry from the start line anytime from your own code:  reset(drone)
+Coordinates are NED metres: +north, +east, +DOWN -- climbing is NEGATIVE z.
+"""
+import argparse
+import asyncio
+
+from redteam_sim import connect, reset, read_frame  # noqa: F401  (reset for your use)
+
+
+async def do(cmd):
+    """Send a *_async() flight command and wait until the maneuver finishes.
+    (They return a task immediately; awaiting the task blocks until it's done.)"""
+    await (await cmd)
+
+
+async def fly(address: str, alt: float, speed: float):
+    client, world, drone = connect(address)   # connects + spawns the drone at the start line
+    try:
+        print(">> arming")
+        drone.enable_api_control()
+        drone.arm()
+
+        print(f">> takeoff, climb to {alt:.0f} m")
+        await do(drone.takeoff_async())
+        await do(drone.move_to_position_async(0.0, -35.0, -alt, speed))
+
+        # ---- your two data sources --------------------------------------
+        # EASY mode: get_ground_truth_kinematics() gives true position.
+        # HARD mode: that's off-limits -- use get_estimated_kinematics() + camera.
+        state = drone.get_estimated_kinematics()              # telemetry (allowed in both modes)
+        pos = state.get("pose", {}).get("position", {})
+        print(f"   estimated pos (NED): "
+              f"x={pos.get('x', 0):.1f} y={pos.get('y', 0):.1f} z={pos.get('z', 0):.1f}")
+        frame = read_frame(drone)                              # vision
+        print(f"   camera frame: {None if frame is None else frame.shape}")
+
+        print(">> waypoint: 5 m north of the start line")
+        await do(drone.move_to_position_async(5.0, -35.0, -alt, speed))
+
+        # ================================================================
+        # YOUR AUTONOMY GOES HERE: loop on frame = read_frame(drone) (+ telemetry),
+        # read the clues, decide the next waypoint, call move_to_position_async(...)
+        # until you reach the target. To retry from the start line:  reset(drone)
+        # ================================================================
+
+        print(">> landing")
+        await do(drone.land_async())
+        drone.disarm()
+        print(">> done")
+    finally:
+        client.disconnect()
+
+
+def main():
+    ap = argparse.ArgumentParser(description="SimpleFlight autonomous-flight starter.")
+    ap.add_argument("--address", default="127.0.0.1")
+    ap.add_argument("--alt", type=float, default=5.0, help="climb altitude (m)")
+    ap.add_argument("--speed", type=float, default=3.0, help="move speed (m/s)")
+    args = ap.parse_args()
+    asyncio.run(fly(args.address, args.alt, args.speed))
+
+
+if __name__ == "__main__":
+    main()
