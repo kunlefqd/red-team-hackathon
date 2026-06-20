@@ -342,21 +342,24 @@ async def spin_find_arrows(drone, min_each=15):
     return None
 
 
-async def approach_arrow_sign(drone, max_steps=40, bottom_frac=0.90):
+async def approach_arrow_sign(drone, bottom_frac=0.90):
     """
-    Fly forward (body-frame) 1 m at a time.
-    Stop when the green arrow blob centroid is in the bottom bottom_frac
-    of the frame — meaning the sign is directly below/ahead of us.
+    Issue one long-duration forward velocity command so the drone moves
+    smoothly without stop/start.  Poll frames every 0.1 s in the background.
+    Override with hover_async() the moment the stop condition fires.
     """
     approach_yaw = _yaw_deg(drone)
     log.info(f">> approaching arrow sign … (heading {approach_yaw:.1f}°)")
 
-    for step in range(max_steps):
+    # Start moving — don't double-await, let it run in the background
+    await drone.move_by_velocity_body_frame_async(3.0, 0.0, 0.0, 60.0)
+
+    step = 0
+    while step < 200:
+        await asyncio.sleep(0.1)
         frame = read_frame(drone)
         if frame is not None:
             g_mask, r_mask = _green_red_masks(frame)
-            h = frame.shape[0]
-
             g_px = cv2.countNonZero(g_mask)
             r_px = cv2.countNonZero(r_mask)
             active = g_mask if g_px >= r_px else r_mask
@@ -366,21 +369,20 @@ async def approach_arrow_sign(drone, max_steps=40, bottom_frac=0.90):
             if active_px > 50:
                 M = cv2.moments(active)
                 if M["m00"] > 0:
-                    norm_cy = (M["m01"] / M["m00"]) / h
+                    norm_cy = (M["m01"] / M["m00"]) / frame.shape[0]
 
-            _save(frame, f"approach_{step:02d}")
-            _debug_arrow_view(frame, f"approach {step} | cy={norm_cy*100:.1f}% / {bottom_frac*100:.0f}%  g={g_px} r={r_px}")
             log.info(f"   step {step:02d}: cy={norm_cy*100:.1f}%  g_px={g_px}  r_px={r_px}")
+            _debug_arrow_view(frame, f"approach {step} | cy={norm_cy*100:.1f}% / {bottom_frac*100:.0f}%")
 
             if active_px > 50 and norm_cy >= bottom_frac:
-                log.info("   ✓ arrows near bottom of screen — stopping approach")
+                log.info("   ✓ arrows near bottom — stopping")
+                await do(drone.hover_async())
                 return frame
 
-        await do(drone.move_by_velocity_body_frame_async(1.0, 0.0, 0.0, 1.0))
-        await do(drone.hover_async())
-        await asyncio.sleep(0.4)
+        step += 1
 
-    log.info("   approach max steps reached")
+    log.info("   approach max iterations reached")
+    await do(drone.hover_async())
     return read_frame(drone)
 
 
