@@ -1,0 +1,789 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Signal Lost. Mission Still Running.</title>
+    <style>
+        :root {
+            --bg: #070b14;
+            --bg2: #0d1424;
+            --panel: #111a2e;
+            --ink: #eaf1ff;
+            --muted: #8da2c0;
+            --accent: #36e0a6;
+            --accent2: #4ea1ff;
+            --danger: #ff5d6c;
+            --amber: #ffc857;
+            --line: #1d2942;
+            --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+            --sans: "Segoe UI", system-ui, -apple-system, Helvetica, Arial, sans-serif;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        html,
+        body {
+            height: 100%;
+        }
+
+        body {
+            background: radial-gradient(1200px 800px at 70% -10%, #13203b 0%, var(--bg) 55%);
+            color: var(--ink);
+            font-family: var(--sans);
+            overflow: hidden;
+        }
+
+        .deck {
+            height: 100vh;
+            width: 100vw;
+            position: relative;
+        }
+
+        .slide {
+            position: absolute;
+            inset: 0;
+            display: none;
+            flex-direction: column;
+            justify-content: center;
+            padding: 6vh 8vw;
+            opacity: 0;
+            transition: opacity .35s ease;
+        }
+
+        .slide.active {
+            display: flex;
+            opacity: 1;
+            animation: rise .45s ease;
+        }
+
+        @keyframes rise {
+            from {
+                transform: translateY(14px);
+                opacity: 0;
+            }
+
+            to {
+                transform: translateY(0);
+                opacity: 1;
+            }
+        }
+
+        .tag {
+            display: inline-block;
+            font: 600 12px/1 var(--mono);
+            letter-spacing: .22em;
+            text-transform: uppercase;
+            color: var(--accent);
+            border: 1px solid var(--line);
+            border-radius: 999px;
+            padding: 8px 14px;
+            margin-bottom: 22px;
+            background: rgba(54, 224, 166, .06);
+            width: max-content;
+        }
+
+        .tag.b {
+            color: var(--accent2);
+            background: rgba(78, 161, 255, .06);
+        }
+
+        .tag.a {
+            color: var(--amber);
+            background: rgba(255, 200, 87, .06);
+        }
+
+        .tag.d {
+            color: var(--danger);
+            background: rgba(255, 93, 108, .06);
+        }
+
+        h1 {
+            font-size: clamp(34px, 5.4vw, 74px);
+            line-height: 1.03;
+            letter-spacing: -.02em;
+            font-weight: 800;
+        }
+
+        h2 {
+            font-size: clamp(26px, 3.6vw, 46px);
+            line-height: 1.08;
+            letter-spacing: -.01em;
+            font-weight: 750;
+            margin-bottom: 6px;
+        }
+
+        h3 {
+            font-size: clamp(17px, 1.5vw, 22px);
+            font-weight: 700;
+            color: var(--ink);
+        }
+
+        .sub {
+            color: var(--muted);
+            font-size: clamp(15px, 1.7vw, 21px);
+            margin-top: 18px;
+            max-width: 64ch;
+            line-height: 1.55;
+        }
+
+        .lead {
+            color: var(--muted);
+            font-size: clamp(15px, 1.5vw, 19px);
+            margin-top: 6px;
+            margin-bottom: 26px;
+        }
+
+        p {
+            line-height: 1.55;
+        }
+
+        strong {
+            color: var(--ink);
+        }
+
+        .accent {
+            color: var(--accent);
+        }
+
+        .blue {
+            color: var(--accent2);
+        }
+
+        .danger {
+            color: var(--danger);
+        }
+
+        .amber {
+            color: var(--amber);
+        }
+
+        ul {
+            list-style: none;
+            margin-top: 14px;
+        }
+
+        li {
+            position: relative;
+            padding-left: 26px;
+            margin: 12px 0;
+            color: #cbd8ee;
+            font-size: clamp(14px, 1.5vw, 20px);
+            line-height: 1.5;
+        }
+
+        li::before {
+            content: "";
+            position: absolute;
+            left: 0;
+            top: .55em;
+            width: 9px;
+            height: 9px;
+            border-radius: 2px;
+            background: var(--accent);
+            transform: rotate(45deg);
+        }
+
+        li.b::before {
+            background: var(--accent2);
+        }
+
+        li.a::before {
+            background: var(--amber);
+        }
+
+        li.d::before {
+            background: var(--danger);
+        }
+
+        .grid {
+            display: grid;
+            gap: 20px;
+            margin-top: 24px;
+        }
+
+        .g2 {
+            grid-template-columns: 1fr 1fr;
+        }
+
+        .g3 {
+            grid-template-columns: repeat(3, 1fr);
+        }
+
+        .card {
+            background: linear-gradient(180deg, var(--panel), var(--bg2));
+            border: 1px solid var(--line);
+            border-radius: 16px;
+            padding: 22px;
+        }
+
+        .card h3 {
+            margin-bottom: 10px;
+        }
+
+        .card p {
+            color: var(--muted);
+            font-size: 15px;
+        }
+
+        .card li {
+            font-size: 15px;
+            margin: 9px 0;
+        }
+
+        .two {
+            display: grid;
+            grid-template-columns: 1.05fr .95fr;
+            gap: 42px;
+            align-items: center;
+        }
+
+        @media(max-width:900px) {
+
+            .two,
+            .g2,
+            .g3 {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        code,
+        .mono {
+            font-family: var(--mono);
+        }
+
+        .pipe {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
+            margin-top: 10px;
+        }
+
+        .pnode {
+            background: linear-gradient(180deg, var(--panel), var(--bg2));
+            border: 1px solid var(--line);
+            border-radius: 12px;
+            padding: 14px 22px;
+            font: 600 16px/1 var(--sans);
+            min-width: 280px;
+            text-align: center;
+        }
+
+        .pdown {
+            color: var(--line);
+            font-size: 20px;
+        }
+
+        .flow {
+            display: flex;
+            align-items: stretch;
+            gap: 12px;
+            margin-top: 26px;
+            flex-wrap: wrap;
+        }
+
+        .step {
+            flex: 1;
+            min-width: 150px;
+            background: linear-gradient(180deg, var(--panel), var(--bg2));
+            border: 1px solid var(--line);
+            border-radius: 16px;
+            padding: 18px;
+        }
+
+        .step .n {
+            font: 700 12px/1 var(--mono);
+            color: var(--muted);
+            letter-spacing: .2em;
+        }
+
+        .step h3 {
+            margin: 9px 0 6px;
+            font-size: 17px;
+        }
+
+        .step p {
+            color: var(--muted);
+            font-size: 13px;
+            line-height: 1.45;
+        }
+
+        .arrow {
+            align-self: center;
+            color: var(--line);
+            font-size: 24px;
+        }
+
+        table {
+            border-collapse: collapse;
+            margin-top: 22px;
+            width: 100%;
+            font-size: clamp(14px, 1.4vw, 18px);
+        }
+
+        th,
+        td {
+            text-align: left;
+            padding: 12px 18px;
+            border-bottom: 1px solid var(--line);
+        }
+
+        th {
+            color: var(--muted);
+            font-weight: 600;
+            font-size: 13px;
+            text-transform: uppercase;
+            letter-spacing: .12em;
+        }
+
+        .footer {
+            position: fixed;
+            bottom: 18px;
+            left: 0;
+            right: 0;
+            display: flex;
+            justify-content: space-between;
+            padding: 0 32px;
+            font: 600 12px/1 var(--mono);
+            color: #46587a;
+            letter-spacing: .12em;
+            pointer-events: none;
+        }
+
+        .bar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            height: 3px;
+            background: linear-gradient(90deg, var(--accent), var(--accent2));
+            transition: width .35s ease;
+            z-index: 20;
+        }
+
+        .hint {
+            position: fixed;
+            bottom: 16px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: #3a4b6b;
+            font: 600 11px/1 var(--mono);
+            letter-spacing: .16em;
+        }
+
+        /* speaker notes */
+        .notes {
+            position: fixed;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(5, 9, 16, .97);
+            border-top: 1px solid var(--line);
+            padding: 18px 32px;
+            color: #aebfdc;
+            font-size: 15px;
+            line-height: 1.5;
+            display: none;
+            z-index: 30;
+        }
+
+        .notes.show {
+            display: block;
+        }
+
+        .notes b {
+            color: var(--accent);
+            font: 700 11px/1 var(--mono);
+            letter-spacing: .2em;
+            display: block;
+            margin-bottom: 6px;
+            text-transform: uppercase;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="bar" id="bar"></div>
+    <div class="deck" id="deck">
+
+        <!-- 1 ── TITLE ── -->
+        <section class="slide active"
+            data-note="Imagine sending a drone into a disaster zone. The GPS cuts out. Communication drops. Most drones stop being useful. Our goal is to build one that keeps thinking and flying.">
+            <span class="tag d">GPS-Denied · Comms-Denied Autonomy</span>
+            <h1>Signal Lost.<br /><span class="accent">Mission Still Running.</span></h1>
+            <p class="sub">An autonomous drone system for GPS-denied and communication-denied environments.</p>
+            <div class="grid g3" style="margin-top:44px;">
+                <div class="card">
+                    <h3 class="accent">Team Enginerds</h3>
+                    <p>Autonomy &amp; perception</p>
+                </div>
+                <div class="card">
+                    <h3 class="blue">Red Team Hackathon</h3>
+                    <p>Autonomous drone challenge</p>
+                </div>
+                <div class="card">
+                    <h3 class="amber">See · Think · Act</h3>
+                    <p>No pilot. No GPS. No script.</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- 2 ── PROBLEM / STORY ── -->
+        <section class="slide"
+            data-note="This is the core challenge: autonomy is not just flying. It is surviving uncertainty.">
+            <span class="tag d">The Story</span>
+            <h2>The Moment Everything Goes Silent</h2>
+            <div class="two" style="margin-top:24px;">
+                <p class="sub" style="margin-top:0;">A drone enters a collapsed urban area after an emergency.
+                    GPS is unreliable. Communication is unavailable. A human pilot cannot guide it.
+                    <strong>The drone must make decisions on its own.</strong>
+                </p>
+                <div class="card">
+                    <ul class="d">
+                        <li class="d">No remote pilot</li>
+                        <li class="d">No reliable GPS</li>
+                        <li class="a">Unknown environment</li>
+                        <li class="b">Mission still needs to continue</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <!-- 3 ── WHY IT MATTERS ── -->
+        <section class="slide"
+            data-note="This is not just a hackathon problem. GPS-denied navigation is a real barrier for drones being used in serious environments.">
+            <span class="tag a">Why This Matters</span>
+            <h2>Real-World Need</h2>
+            <p class="lead">This technology could apply across high-stakes, signal-denied domains:</p>
+            <div class="grid g3">
+                <div class="card">
+                    <h3 class="accent">Search &amp; Rescue</h3>
+                    <p>Find survivors when networks are down.</p>
+                </div>
+                <div class="card">
+                    <h3 class="blue">Disaster Response</h3>
+                    <p>Operate inside collapsed or hazardous zones.</p>
+                </div>
+                <div class="card">
+                    <h3 class="amber">Defense &amp; Security</h3>
+                    <p>Function in electronically contested airspace.</p>
+                </div>
+                <div class="card">
+                    <h3 class="accent">Underground / Indoor</h3>
+                    <p>Inspect tunnels and structures with no GPS.</p>
+                </div>
+                <div class="card">
+                    <h3 class="blue">Infrastructure</h3>
+                    <p>Monitor remote assets autonomously.</p>
+                </div>
+                <div class="card">
+                    <h3 class="amber">Entrepreneurial angle</h3>
+                    <p>Customers need drones that don't fail when signals fail.</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- 4 ── VISION ── -->
+        <section class="slide"
+            data-note="We are not building a drone that follows a script. We are building an agent that reacts to what it sees.">
+            <span class="tag">Our Vision</span>
+            <h2>A Drone That Can <span class="accent">See</span>, <span class="blue">Think</span>, and <span
+                    class="amber">Act</span></h2>
+            <p class="lead">Our solution is an autonomous agent that can:</p>
+            <ul>
+                <li>See visual cues through the onboard camera</li>
+                <li class="b">Understand what the scene is asking</li>
+                <li class="a">Remember information from earlier parts of the course</li>
+                <li>Navigate without GPS</li>
+                <li class="d">Make decisions without human control</li>
+            </ul>
+        </section>
+
+        <!-- 5 ── CHALLENGE ── -->
+        <section class="slide"
+            data-note="That means memorizing the course is not a strategy. The drone must perceive and adapt.">
+            <span class="tag b">The Hackathon Challenge</span>
+            <h2>The Mission Environment</h2>
+            <div class="two">
+                <ul class="b">
+                    <li class="b">Simulated quadcopter course (ProjectAirSim)</li>
+                    <li class="b">Unreal Engine environment</li>
+                    <li class="b">simple-flight autopilot · Python control API</li>
+                    <li class="b">Onboard FPV camera (640×480, 120° FOV)</li>
+                    <li class="d">Hard mode has no GPS or ground-truth</li>
+                    <li class="a">Final scene is held out and different</li>
+                </ul>
+                <div class="card">
+                    <h3 class="amber">Why hard-coding fails</h3>
+                    <p style="margin-top:8px;">The final scene changes its <strong>colors, objects, counts, and
+                            geometry</strong>.
+                        A memorized path breaks instantly — the system has to <strong>generalize</strong>.</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- 6 ── PRODUCT CONCEPT ── -->
+        <section class="slide"
+            data-note="Our value is the intelligence layer. We take raw video and telemetry, interpret the mission, and convert it into flight commands.">
+            <span class="tag">Our Product Concept</span>
+            <h2>Introducing: The Autonomous Mission Layer</h2>
+            <div class="two">
+                <div class="pipe">
+                    <div class="pnode">Camera + Telemetry</div>
+                    <div class="pdown">↓</div>
+                    <div class="pnode accent">Perception · OpenCV + Gemini VLM</div>
+                    <div class="pdown">↓</div>
+                    <div class="pnode blue">Decision System</div>
+                    <div class="pdown">↓</div>
+                    <div class="pnode">ProjectAirSim Flight Commands</div>
+                    <div class="pdown">↓</div>
+                    <div class="pnode amber">Autonomous Drone Movement</div>
+                </div>
+                <div>
+                    <p class="sub" style="margin-top:0;">A software layer that turns a basic drone simulator into an
+                        <strong>autonomous decision-making system</strong>.
+                    </p>
+                    <p class="sub">Raw video and telemetry in → interpreted mission → flight commands out.</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- 7 ── HOW IT WORKS ── -->
+        <section class="slide"
+            data-note="This loop runs again and again. The drone is constantly asking: What do I see? What does it mean? What should I do next?">
+            <span class="tag b">How It Works</span>
+            <h2>The Autonomy Loop</h2>
+            <div class="flow">
+                <div class="step">
+                    <div class="n">01</div>
+                    <h3 class="accent">Perceive</h3>
+                    <p>Detect colors, objects, shapes, and targets.</p>
+                </div>
+                <div class="arrow">→</div>
+                <div class="step">
+                    <div class="n">02</div>
+                    <h3 class="blue">Decide</h3>
+                    <p>Choose the next action based on mission state.</p>
+                </div>
+                <div class="arrow">→</div>
+                <div class="step">
+                    <div class="n">03</div>
+                    <h3 class="amber">Act</h3>
+                    <p>Send setpoints via the ProjectAirSim flight API.</p>
+                </div>
+                <div class="arrow">→</div>
+                <div class="step">
+                    <div class="n">04</div>
+                    <h3>Log</h3>
+                    <p>Save frames, decisions, and reasoning for debugging.</p>
+                </div>
+            </div>
+            <p class="sub">Latest FPV frame + onboard telemetry → understand what's there → decide a target → act via
+                setpoints → log everything.</p>
+        </section>
+
+        <!-- 8 ── FEASIBILITY ── -->
+        <section class="slide"
+            data-note="The hard part is integration. But each piece already exists. Our job is to connect them into a reliable system.">
+            <span class="tag a">Feasibility</span>
+            <h2>Feasible Because We're Not Starting From Scratch</h2>
+            <div class="two">
+                <ul class="a">
+                    <li class="a">simple-flight autopilot handles low-level stabilization</li>
+                    <li class="a">ProjectAirSim API issues control commands</li>
+                    <li class="a">OpenCV detects colors, arrows &amp; sphere counts</li>
+                    <li class="a">Gemini VLM recognizes objects &amp; returns pixel locations</li>
+                    <li class="a">Onboard state estimate navigates without GPS</li>
+                    <li class="a">Pydantic validates AI output; logging speeds iteration</li>
+                </ul>
+                <div class="card">
+                    <h3 class="accent">The real work is integration</h3>
+                    <p style="margin-top:8px;">We're not inventing flight control from nothing — we're integrating
+                        <strong>proven tools into one working autonomy pipeline</strong>.
+                    </p>
+                </div>
+            </div>
+        </section>
+
+        <!-- 9 ── TECHNICAL STRATEGY ── -->
+        <section class="slide"
+            data-note="Hard mode bans GPS and ground-truth, so the drone navigates from its onboard state estimate and the camera alone — no positioning oracle.">
+            <span class="tag b">Technical Strategy</span>
+            <h2>Our Build Plan</h2>
+            <div class="grid g2">
+                <div class="card">
+                    <h3 class="accent">Phase 1 · Fly</h3>
+                    <ul>
+                        <li>Connect to control</li>
+                        <li>Arm, take off, hover</li>
+                        <li>Send stable setpoints</li>
+                    </ul>
+                </div>
+                <div class="card">
+                    <h3 class="blue">Phase 2 · See</h3>
+                    <ul class="b">
+                        <li class="b">Capture onboard FPV frames</li>
+                        <li class="b">OpenCV: colors, arrows, sphere counts</li>
+                        <li class="b">Gemini VLM: identify target vehicle</li>
+                    </ul>
+                </div>
+                <div class="card">
+                    <h3 class="amber">Phase 3 · Decide</h3>
+                    <ul class="a">
+                        <li class="a">Track mission state across stages</li>
+                        <li class="a">Remember both prior turns</li>
+                        <li class="a">Map turns → target vehicle (legend)</li>
+                    </ul>
+                </div>
+                <div class="card">
+                    <h3 class="danger">Phase 4 · Survive Hard Mode</h3>
+                    <ul class="d">
+                        <li class="d">Navigate by onboard state estimate (no GPS)</li>
+                        <li class="d">Steer with pixel→angle from the camera</li>
+                        <li class="d">Stop short / land beside on contact targets</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <!-- 10 ── GENERALIZE ── -->
+        <section class="slide"
+            data-note="This is what makes the system entrepreneurial too. A hard-coded demo is not a product. A generalizable autonomy layer is.">
+            <span class="tag">What Makes Our Approach Strong</span>
+            <h2>Built to Generalize</h2>
+            <p class="lead">Instead of hard-coding, we:</p>
+            <ul>
+                <li>Detect cues visually</li>
+                <li class="b">Track mission state</li>
+                <li class="a">Adapt to changed colors and layouts</li>
+                <li>Test against modified scenes</li>
+                <li class="d">Separate fast control from slower reasoning</li>
+            </ul>
+        </section>
+
+        <!-- 12 ── MARKET / IMPACT ── -->
+        <section class="slide"
+            data-note="The long-term opportunity is a plug-in autonomy layer for drones operating in dangerous or signal-denied spaces.">
+            <span class="tag a">Market / Impact</span>
+            <h2>Beyond the Hackathon</h2>
+            <div class="two">
+                <div>
+                    <p class="lead">Potential users:</p>
+                    <ul class="a">
+                        <li class="a">Emergency response teams</li>
+                        <li class="a">Industrial inspection companies</li>
+                        <li class="a">Defense and security groups</li>
+                        <li class="a">Infrastructure operators</li>
+                        <li class="a">Research labs and robotics teams</li>
+                    </ul>
+                </div>
+                <div class="card">
+                    <h3 class="accent">Value proposition</h3>
+                    <p style="margin-top:8px;">Autonomy software that keeps drones useful <strong>when GPS and
+                            communication fail</strong>.</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- 13 ── RISKS ── -->
+        <section class="slide"
+            data-note="A strong engineering pitch does not pretend there are no risks. It shows that we understand them and designed around them.">
+            <span class="tag d">Risks</span>
+            <h2>Risks Become Design Requirements</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Risk</th>
+                        <th>Our Response</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td class="danger">GPS unavailable</td>
+                        <td>Navigate by onboard state estimate + camera</td>
+                    </tr>
+                    <tr>
+                        <td class="danger">Visual cues change</td>
+                        <td>Detect &amp; reason — never hard-code the path</td>
+                    </tr>
+                    <tr>
+                        <td class="danger">VLM latency / API rate limits</td>
+                        <td>Fast OpenCV for reflexes; VLM only for hard calls</td>
+                    </tr>
+                    <tr>
+                        <td class="danger">Drone instability</td>
+                        <td>Lean on simple-flight autopilot; tune before speed</td>
+                    </tr>
+                    <tr>
+                        <td class="danger">Debugging difficulty</td>
+                        <td>Log frames, masks &amp; decisions to disk</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+
+        <!-- 14 ── CLOSE ── -->
+        <section class="slide"
+            data-note="That is the future we are pitching: drones that do not stop when the signal does.">
+            <span class="tag">Closing</span>
+            <h1>When Signal Ends,<br /><span class="accent">Autonomy Begins.</span></h1>
+            <p class="lead" style="margin-top:18px;">Our system helps drones:</p>
+            <div class="grid g2" style="margin-top:6px;">
+                <ul>
+                    <li>Navigate without GPS</li>
+                    <li class="b">Make decisions without a pilot</li>
+                </ul>
+                <ul>
+                    <li class="a">Understand visual instructions</li>
+                    <li class="d">Complete missions in unknown environments</li>
+                </ul>
+            </div>
+            <p class="sub" style="margin-top:24px;"><strong>We are building the software brain for drones that
+                    cannot rely on the outside world.</strong></p>
+        </section>
+
+    </div>
+
+    <div class="footer"><span>SIGNAL LOST · MISSION STILL RUNNING</span><span id="count">01 / 14</span></div>
+    <div class="hint">← → / SPACE · F fullscreen · N speaker notes</div>
+    <div class="notes" id="notes"><b>Speaker</b><span id="noteText"></span></div>
+
+    <script>
+        const slides = [...document.querySelectorAll('.slide')];
+        let i = 0, notesOn = false;
+        const bar = document.getElementById('bar');
+        const count = document.getElementById('count');
+        const notes = document.getElementById('notes');
+        const noteText = document.getElementById('noteText');
+        const pad = n => String(n).padStart(2, '0');
+        function show(n) {
+            i = Math.max(0, Math.min(slides.length - 1, n));
+            slides.forEach((s, k) => s.classList.toggle('active', k === i));
+            bar.style.width = ((i + 1) / slides.length * 100) + '%';
+            count.textContent = pad(i + 1) + ' / ' + pad(slides.length);
+            noteText.textContent = slides[i].dataset.note || '';
+        }
+        const next = () => show(i + 1), prev = () => show(i - 1);
+        document.addEventListener('keydown', e => {
+            if (['ArrowRight', 'PageDown', ' '].includes(e.key)) { e.preventDefault(); next(); }
+            else if (['ArrowLeft', 'PageUp'].includes(e.key)) { e.preventDefault(); prev(); }
+            else if (e.key === 'Home') { show(0); }
+            else if (e.key === 'End') { show(slides.length - 1); }
+            else if (e.key.toLowerCase() === 'n') { notesOn = !notesOn; notes.classList.toggle('show', notesOn); }
+            else if (e.key.toLowerCase() === 'f') {
+                document.fullscreenElement ? document.exitFullscreen?.() : document.documentElement.requestFullscreen?.();
+            }
+        });
+        document.getElementById('deck').addEventListener('click', e => {
+            (e.clientX > window.innerWidth / 2) ? next() : prev();
+        });
+        show(0);
+    </script>
+</body>
+
+</html>

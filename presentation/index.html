@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Autonomous Drone — Contested-Environment Navigation</title>
+<style>
+  :root{
+    --bg:#070b14;
+    --bg2:#0d1424;
+    --panel:#111a2e;
+    --ink:#eaf1ff;
+    --muted:#8da2c0;
+    --accent:#36e0a6;     /* green = go */
+    --accent2:#4ea1ff;    /* blue */
+    --danger:#ff5d6c;     /* red = stop */
+    --amber:#ffc857;
+    --line:#1d2942;
+    --mono:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;
+    --sans:"Segoe UI",system-ui,-apple-system,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  html,body{height:100%;}
+  body{
+    background:radial-gradient(1200px 800px at 70% -10%,#13203b 0%,var(--bg) 55%);
+    color:var(--ink);
+    font-family:var(--sans);
+    overflow:hidden;
+  }
+
+  /* ── Deck framework ── */
+  .deck{height:100vh;width:100vw;position:relative;}
+  .slide{
+    position:absolute;inset:0;
+    display:none;
+    flex-direction:column;
+    justify-content:center;
+    padding:6vh 8vw;
+    opacity:0;
+    transition:opacity .35s ease;
+  }
+  .slide.active{display:flex;opacity:1;animation:rise .45s ease;}
+  @keyframes rise{from{transform:translateY(14px);opacity:0;}to{transform:translateY(0);opacity:1;}}
+
+  /* ── Chrome ── */
+  .tag{
+    display:inline-block;font:600 12px/1 var(--mono);
+    letter-spacing:.22em;text-transform:uppercase;color:var(--accent);
+    border:1px solid var(--line);border-radius:999px;
+    padding:8px 14px;margin-bottom:22px;background:rgba(54,224,166,.06);
+    width:max-content;
+  }
+  .tag.b{color:var(--accent2);background:rgba(78,161,255,.06);}
+  .tag.a{color:var(--amber);background:rgba(255,200,87,.06);}
+  h1{font-size:clamp(34px,5.6vw,76px);line-height:1.02;letter-spacing:-.02em;font-weight:800;}
+  h2{font-size:clamp(26px,3.6vw,46px);line-height:1.08;letter-spacing:-.01em;font-weight:750;margin-bottom:6px;}
+  h3{font-size:clamp(17px,1.5vw,22px);font-weight:700;color:var(--ink);}
+  .sub{color:var(--muted);font-size:clamp(15px,1.7vw,21px);margin-top:18px;max-width:60ch;line-height:1.55;}
+  .lead{color:var(--muted);font-size:clamp(15px,1.5vw,19px);margin-top:6px;margin-bottom:26px;}
+  p{line-height:1.55;}
+  strong{color:var(--ink);}
+  .accent{color:var(--accent);}
+  .blue{color:var(--accent2);}
+  .danger{color:var(--danger);}
+  .amber{color:var(--amber);}
+
+  ul{list-style:none;margin-top:14px;}
+  li{position:relative;padding-left:26px;margin:14px 0;color:#cbd8ee;font-size:clamp(15px,1.55vw,20px);line-height:1.5;}
+  li::before{content:"";position:absolute;left:0;top:.55em;width:9px;height:9px;border-radius:2px;background:var(--accent);transform:rotate(45deg);}
+  li.b::before{background:var(--accent2);}
+  li.a::before{background:var(--amber);}
+  li.d::before{background:var(--danger);}
+
+  .grid{display:grid;gap:22px;margin-top:26px;}
+  .g2{grid-template-columns:1fr 1fr;}
+  .g3{grid-template-columns:repeat(3,1fr);}
+  .card{
+    background:linear-gradient(180deg,var(--panel),var(--bg2));
+    border:1px solid var(--line);border-radius:16px;padding:24px;
+  }
+  .card h3{margin-bottom:10px;}
+  .card p{color:var(--muted);font-size:15px;}
+  .kpi{font:800 clamp(30px,4vw,54px)/1 var(--sans);}
+
+  code,.mono{font-family:var(--mono);}
+  pre{
+    background:#0a1120;border:1px solid var(--line);border-radius:14px;
+    padding:20px 22px;overflow:auto;margin-top:20px;
+    font-family:var(--mono);font-size:clamp(12px,1.15vw,15px);line-height:1.6;color:#d7e3fb;
+  }
+  pre .c{color:#5e7398;}      /* comment */
+  pre .k{color:#ff9ec4;}      /* keyword */
+  pre .s{color:var(--accent);}/* string */
+  pre .n{color:var(--amber);} /* number */
+  pre .f{color:var(--accent2);}/* func/name */
+
+  /* ── Flow diagram ── */
+  .flow{display:flex;align-items:stretch;gap:14px;margin-top:30px;flex-wrap:wrap;}
+  .step{
+    flex:1;min-width:150px;background:linear-gradient(180deg,var(--panel),var(--bg2));
+    border:1px solid var(--line);border-radius:16px;padding:20px;position:relative;
+  }
+  .step .n{font:700 12px/1 var(--mono);color:var(--muted);letter-spacing:.2em;}
+  .step h3{margin:10px 0 6px;font-size:18px;}
+  .step p{color:var(--muted);font-size:13.5px;line-height:1.45;}
+  .arrow{align-self:center;color:var(--line);font-size:26px;}
+
+  table{border-collapse:collapse;margin-top:24px;width:100%;font-size:clamp(14px,1.4vw,18px);}
+  th,td{text-align:left;padding:13px 18px;border-bottom:1px solid var(--line);}
+  th{color:var(--muted);font-weight:600;font-size:13px;text-transform:uppercase;letter-spacing:.12em;}
+  td .pill{font:600 13px/1 var(--mono);padding:5px 10px;border-radius:999px;border:1px solid var(--line);}
+
+  .footer{position:fixed;bottom:18px;left:0;right:0;display:flex;justify-content:space-between;
+    padding:0 32px;font:600 12px/1 var(--mono);color:#46587a;letter-spacing:.12em;pointer-events:none;}
+  .bar{position:fixed;top:0;left:0;height:3px;background:linear-gradient(90deg,var(--accent),var(--accent2));transition:width .35s ease;z-index:20;}
+  .hint{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);color:#3a4b6b;font:600 11px/1 var(--mono);letter-spacing:.18em;}
+
+  .two{display:grid;grid-template-columns:1.05fr .95fr;gap:42px;align-items:center;}
+  @media(max-width:900px){.two,.g2,.g3{grid-template-columns:1fr;}}
+</style>
+</head>
+<body>
+<div class="bar" id="bar"></div>
+<div class="deck" id="deck">
+
+  <!-- 1 ── TITLE ───────────────────────────────────────── -->
+  <section class="slide active">
+    <span class="tag">CAF · Contested-Environment Autonomy</span>
+    <h1>Autonomous Drone Navigation<br/><span class="accent">Without GPS. Without a Data Link.</span></h1>
+    <p class="sub">A drone that reads its environment and solves its own way to the objective —
+      using onboard vision and reasoning when remote control and GPS are denied.</p>
+    <div class="grid g3" style="margin-top:42px;">
+      <div class="card"><div class="kpi accent">0</div><p>remote commands required mid-mission</p></div>
+      <div class="card"><div class="kpi blue">3</div><p>perception stages solved fully onboard</p></div>
+      <div class="card"><div class="kpi amber">2</div><p>vision systems: OpenCV + Gemini VLM</p></div>
+    </div>
+    <p class="lead" style="margin-top:38px;">Enginerds</p>
+  </section>
+
+  <!-- 2 ── PROBLEM (entrepreneurial drive) ──────────────── -->
+  <section class="slide">
+    <span class="tag a">The Problem · Entrepreneurial Drive</span>
+    <h2>Uncrewed systems are losing their lifelines.</h2>
+    <div class="two" style="margin-top:30px;">
+      <div>
+        <p class="sub" style="margin-top:0;">In modern CAF operations, uncrewed systems must increasingly
+        operate in <strong>electronically contested</strong> and <strong>communication-denied</strong>
+        environments — where remote control, data links, and GPS are jammed, spoofed, or simply unavailable.</p>
+        <ul>
+          <li class="d">GPS denied → no positioning oracle</li>
+          <li class="d">Data link jammed → no human in the loop</li>
+          <li class="a">Mission still has to be completed — autonomously</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3 class="danger">The gap</h3>
+        <p style="margin-top:8px;">Most autonomy assumes a clean link and a GPS fix. Remove both and
+        the platform is blind. The drone needs to <strong>perceive, reason, and decide</strong>
+        on its own — turning raw camera pixels into navigation.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3 ── SOLUTION ─────────────────────────────────────── -->
+  <section class="slide">
+    <span class="tag">Our Solution</span>
+    <h2>A drone that <span class="accent">solves the puzzle</span>, not just flies the route.</h2>
+    <p class="lead">It navigates a branching course by reading visual clues at each junction —
+      exactly the skill needed when no one can tell it where to go.</p>
+    <div class="grid g3">
+      <div class="card"><h3 class="accent">Perceive</h3><p>Onboard camera frames are the only input. OpenCV + a vision-language model extract meaning.</p></div>
+      <div class="card"><h3 class="blue">Reason</h3><p>Clues chain together — each decision narrows the objective until exactly one target remains.</p></div>
+      <div class="card"><h3 class="amber">Act</h3><p>Pixel detections become yaw angles. The drone steers, approaches, and delivers — or stops short.</p></div>
+    </div>
+  </section>
+
+  <!-- 4 ── MISSION FLOW ─────────────────────────────────── -->
+  <section class="slide">
+    <span class="tag b">How It Works · Mission Flow</span>
+    <h2>Two reads, two turns, one target.</h2>
+    <div class="flow">
+      <div class="step"><div class="n">STAGE 01</div><h3 class="accent">Green Arrow</h3><p>Find the red/green sign. <strong>Turn the way green points.</strong></p></div>
+      <div class="arrow">→</div>
+      <div class="step"><div class="n">STAGE 02</div><h3 class="blue">Count Spheres</h3><p>Count blue spheres. <strong>Even → Left, Odd → Right.</strong></p></div>
+      <div class="arrow">→</div>
+      <div class="step"><div class="n">STAGE 03</div><h3 class="amber">Find Target</h3><p>Two turns select <strong>one</strong> of four vehicles. Locate &amp; reach it.</p></div>
+    </div>
+    <p class="sub">Each stage feeds the next. The two turns are not just movement — they are
+      the <strong>logical key</strong> that determines which vehicle is the true objective.</p>
+  </section>
+
+  <!-- 5 ── ALGORITHM APPROACH ───────────────────────────── -->
+  <section class="slide">
+    <span class="tag">Algorithm Approach</span>
+    <h2>The right tool for the right clue.</h2>
+    <div class="grid g2">
+      <div class="card">
+        <h3 class="accent">OpenCV — geometry &amp; counting</h3>
+        <ul>
+          <li>HSV color masking isolates red/green arrows and blue spheres</li>
+          <li>Contour analysis reads arrow <strong>direction</strong> and sphere <strong>count</strong></li>
+          <li>Fast, deterministic, runs every frame — no API cost</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3 class="blue">Gemini VLM — semantic recognition</h3>
+        <ul class="b">
+          <li class="b">Distinguishes a tank from a boat, jet, or ice-cream truck</li>
+          <li class="b">Returns the target's <strong>pixel location</strong> on screen</li>
+          <li class="b">Handles the open-ended "what am I looking at?" problem</li>
+        </ul>
+      </div>
+    </div>
+    <p class="sub">Then the core logic: the <strong>two prior choices become the input</strong>
+      to a decision table that outputs exactly one target vehicle.</p>
+  </section>
+
+  <!-- 6 ── DECISION LOGIC ───────────────────────────────── -->
+  <section class="slide">
+    <span class="tag">Algorithm · Decision Logic</span>
+    <h2>Two turns → one objective.</h2>
+    <div class="two">
+      <table>
+        <thead><tr><th>Turn 1</th><th>Turn 2</th><th>Target</th><th>Action</th></tr></thead>
+        <tbody>
+          <tr><td>Left</td><td>Left</td><td><span class="pill accent">Tank</span></td><td>fly into</td></tr>
+          <tr><td>Left</td><td>Right</td><td><span class="pill accent">Boat</span></td><td>fly into</td></tr>
+          <tr><td>Right</td><td>Left</td><td><span class="pill accent">Jet</span></td><td>fly into</td></tr>
+          <tr><td>Right</td><td>Right</td><td><span class="pill amber">Ice-Cream Truck</span></td><td class="amber">land beside</td></tr>
+        </tbody>
+      </table>
+      <pre><span class="c"># two prior choices → the single objective</span>
+_LEGEND = {
+  (<span class="s">"LEFT"</span>,  <span class="s">"LEFT"</span>):  (VehicleType.<span class="f">TANK</span>,  <span class="k">False</span>),
+  (<span class="s">"LEFT"</span>,  <span class="s">"RIGHT"</span>): (VehicleType.<span class="f">BOAT</span>,  <span class="k">False</span>),
+  (<span class="s">"RIGHT"</span>, <span class="s">"LEFT"</span>):  (VehicleType.<span class="f">JET</span>,   <span class="k">False</span>),
+  (<span class="s">"RIGHT"</span>, <span class="s">"RIGHT"</span>): (VehicleType.<span class="f">ICE_CREAM_TRUCK</span>, <span class="k">True</span>),
+}</pre>
+    </div>
+  </section>
+
+  <!-- 7 ── TECHNICAL: structured output ─────────────────── -->
+  <section class="slide">
+    <span class="tag b">Technical Implementation · Structured Vision</span>
+    <h2>We don't parse prose — we get <span class="blue">typed data</span>.</h2>
+    <p class="lead">Pydantic + Gemini's structured output force the model to return a validated schema,
+      so the control loop receives fields it can act on directly.</p>
+    <div class="two">
+      <pre><span class="k">class</span> <span class="f">VLMResponse</span>(BaseModel):
+    target_visible: <span class="f">bool</span>
+    bbox_center_px: <span class="f">list</span>[<span class="f">int</span>]   <span class="c"># [x, y]</span>
+    distance_band:  DistanceBand   <span class="c"># far…very_close</span>
+    confidence:     <span class="f">float</span>         <span class="c"># 0.0 – 1.0</span></pre>
+      <div>
+        <ul class="b">
+          <li class="b"><strong>target_visible</strong> — gate every decision on real detection</li>
+          <li class="b"><strong>bbox_center_px</strong> — where the target is on screen</li>
+          <li class="b"><strong>confidence</strong> — below 0.6 we hover &amp; re-query instead of acting on a guess</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- 8 ── TECHNICAL: pixels to angles ──────────────────── -->
+  <section class="slide">
+    <span class="tag b">Technical Implementation · Pixels → Motion</span>
+    <h2>From a pixel on screen to a heading the drone can fly.</h2>
+    <div class="two">
+      <div>
+        <ul class="b">
+          <li class="b">VLM gives the target's pixel <code>(x, y)</code></li>
+          <li class="b">Camera geometry (120° FOV) maps it to a <strong>yaw offset</strong></li>
+          <li class="b">Drone yaws onto the target, then closes distance</li>
+          <li class="b">Re-query each tick — small errors self-correct, like a closed loop</li>
+        </ul>
+      </div>
+      <pre><span class="k">def</span> <span class="f">pixel_to_angles</span>(x_px, y_px):
+    dx = x_px - FRAME_W / <span class="n">2</span>
+    yaw = (dx / (FRAME_W/<span class="n">2</span>)) * (HFOV_DEG/<span class="n">2</span>)
+    <span class="c"># yaw &gt; 0 → target is RIGHT, steer right</span>
+    <span class="k">return</span> yaw_deg, pitch_deg</pre>
+    </div>
+  </section>
+
+  <!-- 9 ── TECHNICAL: deliver vs stop ───────────────────── -->
+  <section class="slide">
+    <span class="tag a">Technical Implementation · Safe Delivery</span>
+    <h2>It knows the difference between a strike and a delivery.</h2>
+    <div class="grid g2">
+      <div class="card">
+        <h3 class="accent">Tank · Boat · Jet</h3>
+        <p style="margin-top:8px;">Fly into the target to register the objective. Center on it, close the
+        distance, confirm with the distance band.</p>
+      </div>
+      <div class="card">
+        <h3 class="amber">Ice-Cream Truck</h3>
+        <p style="margin-top:8px;">A delivery, not a collision. The drone <strong>stops short and lands beside it</strong>
+        — using the <code class="amber">distance_band</code> to brake before impact.</p>
+      </div>
+    </div>
+    <p class="sub">The objective type changes the behavior — context-aware action, decided onboard.</p>
+  </section>
+
+  <!-- 10 ── FEASIBILITY & SCALABILITY ───────────────────── -->
+  <section class="slide">
+    <span class="tag">Feasibility &amp; Scalability</span>
+    <h2>Riding the curve of frontier AI.</h2>
+    <div class="two">
+      <div>
+        <ul>
+          <li><strong>Feasible today</strong> and improving — every new premier model makes onboard reasoning cheaper, faster, and more reliable</li>
+          <li>Architecture is <strong>model-agnostic</strong>: swap in a better/on-device VLM as they arrive</li>
+          <li class="a"><strong>The challenge:</strong> repeated API calls hit <span class="amber">rate limits</span> during testing</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3 class="amber">Scaling path</h3>
+        <ul class="a">
+          <li class="a">OpenCV does the high-frequency work; VLM is reserved for the hard semantic calls</li>
+          <li class="a">Confidence gating + caching cuts redundant queries</li>
+          <li class="a">Edge / on-device models remove the network dependency entirely</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- 11 ── VISION ──────────────────────────────────────── -->
+  <section class="slide">
+    <span class="tag">Storytelling &amp; Vision</span>
+    <h2>When the link goes dark, the mission doesn't stop.</h2>
+    <p class="sub" style="max-width:70ch;">We built a drone that thinks for itself the moment it's cut off —
+      reading the world, reasoning through the consequences of each choice, and acting safely on the result.
+      The puzzle is a proxy for the real problem: <strong>autonomy that holds up when the contested environment
+      takes everything else away.</strong></p>
+    <div class="grid g3" style="margin-top:40px;">
+      <div class="card"><h3 class="accent">Perceive</h3><p>Vision is the only sensor that can't be spoofed by jamming the link.</p></div>
+      <div class="card"><h3 class="blue">Reason</h3><p>Structured AI turns sight into decisions a machine can trust.</p></div>
+      <div class="card"><h3 class="amber">Act</h3><p>Right target, right action — including knowing when <em>not</em> to collide.</p></div>
+    </div>
+  </section>
+
+  <!-- 12 ── CLOSE ───────────────────────────────────────── -->
+  <section class="slide">
+    <span class="tag">Thank You</span>
+    <h1>Autonomy that <span class="accent">doesn't depend</span> on the network.</h1>
+    <p class="sub">OpenCV for geometry · Gemini for meaning · Pydantic for trust · Camera geometry for motion.</p>
+    <p class="lead" style="margin-top:34px;">Team Denobiq · Questions welcome.</p>
+  </section>
+
+</div>
+
+<div class="footer"><span id="title">CONTESTED-ENVIRONMENT AUTONOMY</span><span id="count">01 / 12</span></div>
+<div class="hint">← →  /  SPACE  to navigate · F for fullscreen</div>
+
+<script>
+  const slides=[...document.querySelectorAll('.slide')];
+  let i=0;
+  const bar=document.getElementById('bar');
+  const count=document.getElementById('count');
+  const pad=n=>String(n).padStart(2,'0');
+  function show(n){
+    i=Math.max(0,Math.min(slides.length-1,n));
+    slides.forEach((s,k)=>s.classList.toggle('active',k===i));
+    bar.style.width=((i+1)/slides.length*100)+'%';
+    count.textContent=pad(i+1)+' / '+pad(slides.length);
+  }
+  function next(){show(i+1);}
+  function prev(){show(i-1);}
+  document.addEventListener('keydown',e=>{
+    if(['ArrowRight','PageDown',' '].includes(e.key)){e.preventDefault();next();}
+    else if(['ArrowLeft','PageUp'].includes(e.key)){e.preventDefault();prev();}
+    else if(e.key==='Home'){show(0);}
+    else if(e.key==='End'){show(slides.length-1);}
+    else if(e.key.toLowerCase()==='f'){
+      if(!document.fullscreenElement){document.documentElement.requestFullscreen?.();}
+      else{document.exitFullscreen?.();}
+    }
+  });
+  // click right half = next, left half = prev
+  document.getElementById('deck').addEventListener('click',e=>{
+    (e.clientX > window.innerWidth/2) ? next() : prev();
+  });
+  show(0);
+</script>
+</body>
+</html>
